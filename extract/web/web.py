@@ -43,7 +43,7 @@ class WebExtractor:
             content = jina.get_markdown_content(
                 url, profile=self.profile, json=json)
 
-            if self.profile["type"] == "ollama":
+            if self.profile["type"] in ("ollama", "openai"):
                 content = jina.strip_markdown(content)
 
             if json:
