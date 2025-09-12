@@ -1,0 +1,6 @@
+python-dotenv
+readability-lxml
+newspaper3k
+ollama
+requests
+openai
