@@ -20,7 +20,7 @@ class WebExtractor:
     def __init__(self, lib: str = "jina.ai", profile: Optional[Union[str, Dict[str, Any]]] = None):
         self.lib = lib
         if self.lib == "jina.ai":
-            if isintance(profile, Dict):
+            if isinstance(profile, Dict):
                 self.profile = profile
             else:
                 self.profile = jina.get_profile(profile)
