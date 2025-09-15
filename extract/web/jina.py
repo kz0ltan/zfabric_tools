@@ -218,6 +218,7 @@ def get_markdown_content(
     elif profile["type"] == "openai":
         token = profile["token"]
         base_url = profile["url"]
+        model = profile.get("model")
 
         html = get_html_content(url, use_jina_html_api=use_jina_html_api)
         html = clean_html(html, clean_svg=True, clean_base64=True)
@@ -228,7 +229,7 @@ def get_markdown_content(
 
         try:
             response = client.chat.completions.create(
-                model="ReaderLM-v2-BF16",
+                model=model or "ReaderLM-v2-BF16",
                 messages=prompt,
                 stream=False,
             )
