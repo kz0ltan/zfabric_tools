@@ -3,7 +3,7 @@
 import argparse
 import json as js
 from urllib.parse import urlparse
-from typing import List, Optional
+from typing import List, Optional, Any
 
 import requests
 
@@ -17,10 +17,13 @@ ENV_PATH = "~/.config/zfabric/.env"
 
 
 class WebExtractor:
-    def __init__(self, lib: str = "jina.ai"):
+    def __init__(self, lib: str = "jina.ai", profile: Optional[Union[str, Dict[str, Any]]] = None):
         self.lib = lib
         if self.lib == "jina.ai":
-            self.profile = jina.get_profile()
+            if isintance(profile, Dict):
+                self.profile = profile
+            else:
+                self.profile = jina.get_profile(profile)
 
     def extract(self, url: str, json: bool = False) -> str:
         """Extract content from url using lib"""

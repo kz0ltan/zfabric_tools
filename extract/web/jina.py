@@ -195,7 +195,6 @@ def get_markdown_content(
 
         try:
             response = client.chat(
-                # model="ReaderLM-v2-Q8_0_kzoltan:latest",
                 model="ReaderLM-v2-bf16_kzoltan:latest",
                 messages=prompt,
                 stream=False,
