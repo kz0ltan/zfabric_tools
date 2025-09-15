@@ -7,6 +7,7 @@ import argparse
 import base64
 from dotenv import load_dotenv
 import json as js
+import logging
 import os
 import re
 import sys
@@ -18,19 +19,27 @@ import openai
 
 ENV_PATH = "~/.config/zfabric/.env"
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
+
 
 def get_html_content(url: str, use_jina_html_api: bool = False):
     api_url = f"https://r.jina.ai/{url}"
     headers = {"X-Return-Format": "html"}
     try:
         if use_jina_html_api:
-            print(
+            logger.info(
                 f"We will use Jina Reader to fetch the **raw HTML** from: {url}")
             response = requests.get(api_url, headers=headers, timeout=10)
         else:
             response = requests.get(url, timeout=10)
 
         response.raise_for_status()
+        logger.info(f"Retrieved raw HTML content: {len(response.text)}")
         return response.text
     except requests.exceptions.RequestException as e:
         return f"error: {str(e)}"
@@ -155,8 +164,8 @@ def _get_ollama_client(username: str, password: str, host: str):
         return ollama.Client(host=host, headers=headers)
 
 
-def _get_openai_client(url: str, token: str):
-    return openai.OpenAI(api_key=token, base_url=url)
+def _get_openai_client(url: str, token: str, max_retries=5):
+    return openai.OpenAI(api_key=token, base_url=url, max_retries=max_retries)
 
 
 def get_markdown_content(
@@ -201,7 +210,7 @@ def get_markdown_content(
             )
             return response.message.content
         except Exception as e:
-            print("Error: " + str(e))
+            logger.error("Error: " + str(e))
             sys.exit(1)
 
     elif profile["type"] == "jina.ai":
@@ -216,27 +225,31 @@ def get_markdown_content(
         return response.text
 
     elif profile["type"] == "openai":
-        token = profile["token"]
-        base_url = profile["url"]
+        token = profile["api_key"]
+        base_url = profile["base_url"]
         model = profile.get("model")
+        max_retries = profile.get("max_retries")
 
         html = get_html_content(url, use_jina_html_api=use_jina_html_api)
         html = clean_html(html, clean_svg=True, clean_base64=True)
+        logger.info(
+            f"Extracting content from cleaned HTML of size: {len(html)}")
         prompt = create_prompt(html, schema=js.dumps(
             extract_schema, indent=2) if json else None)
 
-        client = _get_openai_client(base_url, token)
+        client = _get_openai_client(base_url, token, max_retries)
 
         try:
             response = client.chat.completions.create(
                 model=model or "ReaderLM-v2-BF16",
                 messages=prompt,
                 stream=False,
+                timeout=300,
             )
 
             return response.choices[0].message.content
         except Exception as e:
-            print("Error: " + str(e))
+            logger.error("Error: " + str(e))
             sys.exit(1)
 
     else:
