@@ -3,7 +3,7 @@
 import argparse
 import json as js
 from urllib.parse import urlparse
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Union
 
 import requests
 
