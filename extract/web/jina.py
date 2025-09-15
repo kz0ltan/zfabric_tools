@@ -228,7 +228,7 @@ def get_markdown_content(
         token = profile["api_key"]
         base_url = profile["base_url"]
         model = profile.get("model")
-        max_retries = profile.get("max_retries")
+        max_retries = profile.get("max_retries", 5)
 
         html = get_html_content(url, use_jina_html_api=use_jina_html_api)
         html = clean_html(html, clean_svg=True, clean_base64=True)
