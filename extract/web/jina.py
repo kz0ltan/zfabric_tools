@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import sys
-from typing import Dict
+from typing import Dict, Optional
 
 import requests
 import ollama
@@ -27,22 +27,46 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_html_content(url: str, use_jina_html_api: bool = False):
+class RetrievalError(Exception):
+    pass
+
+
+def get_html_content(url: str, proxies: Optional[Dict[str, str]] = None, retriever: str = "requests"):
     api_url = f"https://r.jina.ai/{url}"
-    headers = {"X-Return-Format": "html"}
     try:
-        if use_jina_html_api:
+        if retriever == "jina_api":
+            headers = {"X-Return-Format": "html"}
             logger.info(
                 f"We will use Jina Reader to fetch the **raw HTML** from: {url}")
-            response = requests.get(api_url, headers=headers, timeout=10)
+            response = requests.get(
+                api_url,
+                proxies=proxies,
+                verify=False if proxies else True,
+                headers=headers,
+                timeout=10
+            )
+        elif retriever == "requests":
+            # CloudFlare tends to block this
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1"
+            }
+            response = requests.get(
+                url,
+                proxies=proxies,
+                verify=False if proxies else True,
+                headers=headers,
+                timeout=10
+            )
         else:
-            response = requests.get(url, timeout=10)
+            raise ValueError(f"Unknown retriever {retriever}")
 
         response.raise_for_status()
         logger.info(f"Retrieved raw HTML content: {len(response.text)}")
         return response.text
     except requests.exceptions.RequestException as e:
-        return f"error: {str(e)}"
+        error = f"Error during HTML retrieveal: {str(e)}"
+        logger.error(error)
+        raise RetrievalError(error)
 
 
 def create_prompt(text: str, instruction: str = None, schema: str = None) -> str:
@@ -173,7 +197,7 @@ def get_markdown_content(
     profile: Dict,
     json: bool = False,
     schema: Dict = None,
-    use_jina_html_api: bool = False,
+    retriever: str = "requests"
 ):
     extract_schema = (
         {
@@ -190,9 +214,18 @@ def get_markdown_content(
         else schema
     )
 
+    proxies = None
+    if "proxy" in profile:
+        proxies = {
+            "http": profile["proxy"],
+            "https": profile["proxy"]
+        }
+
     if profile["type"] == "ollama":
-        html = get_html_content(url, use_jina_html_api=use_jina_html_api)
+        html = get_html_content(url, proxies=proxies, retriever=retriever)
         html = clean_html(html, clean_svg=True, clean_base64=True)
+        logger.info(
+            f"Extracting content from cleaned HTML of size: {len(html)}")
         prompt = create_prompt(html, schema=js.dumps(
             extract_schema, indent=2) if json else None)
 
@@ -208,29 +241,33 @@ def get_markdown_content(
                 messages=prompt,
                 stream=False,
             )
-            return response.message.content
+            return html, response.message.content
         except Exception as e:
             logger.error("Error: " + str(e))
             sys.exit(1)
 
     elif profile["type"] == "jina.ai":
-        token = profile["token"]
-        headers = {"Authorization": "Bearer " + token}
+        headers = {"Authorization": "Bearer " + profile["token"]}
         if json:
             headers["Accept"] = "application/json"
 
-        response = requests.get("https://r.jina.ai/" +
-                                url, headers=headers, timeout=10)
+        response = requests.get(
+            "https://r.jina.ai/" + url,
+            headers=headers,
+            proxies=proxies,
+            timeout=10
+        )
 
-        return response.text
+        return "", response.text
 
     elif profile["type"] == "openai":
         token = profile["api_key"]
         base_url = profile["base_url"]
         model = profile.get("model")
         max_retries = profile.get("max_retries", 5)
+        timeout = profile.get("timeout", 60)
 
-        html = get_html_content(url, use_jina_html_api=use_jina_html_api)
+        html = get_html_content(url, proxies=proxies, retriever=retriever)
         html = clean_html(html, clean_svg=True, clean_base64=True)
         logger.info(
             f"Extracting content from cleaned HTML of size: {len(html)}")
@@ -244,10 +281,10 @@ def get_markdown_content(
                 model=model or "ReaderLM-v2-BF16",
                 messages=prompt,
                 stream=False,
-                timeout=300,
+                timeout=timeout
             )
 
-            return response.choices[0].message.content
+            return html, response.choices[0].message.content
         except Exception as e:
             logger.error("Error: " + str(e))
             sys.exit(1)
@@ -281,10 +318,9 @@ def parse_args():
     parser.add_argument("--json", default=False,
                         action="store_true", help="Use predefined schema")
     parser.add_argument(
-        "--jina_html_api",
-        default=False,
-        action="store_true",
-        help="Use Jina.ai API to get raw html content",
+        "--retriver",
+        default="requests",
+        help="What retriever to use to get the raw HTML content: requests/jina_api"
     )
 
     return parser.parse_args()
@@ -321,7 +357,7 @@ def main():
     args = parse_args()
     profile = get_profile(args.profile)
     content = get_markdown_content(
-        args.url, profile=profile, json=args.json, use_jina_html_api=args.jina_html_api
+        args.url, profile=profile, json=args.json, retriever=args.retriever
     )
     print(content)
 

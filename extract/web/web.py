@@ -25,7 +25,7 @@ class WebExtractor:
             else:
                 self.profile = jina.get_profile(profile)
 
-    def extract(self, url: str, json: bool = False) -> str:
+    def extract(self, url: str, json: bool = False, retriever: str = "requests") -> str:
         """Extract content from url using lib"""
         if self.lib == "newspaper3k":
             from newspaper import Article
@@ -33,18 +33,18 @@ class WebExtractor:
             article = Article(url)
             article.download()
             article.parse()
-            return article.text
+            return article.html, article.text
 
         elif self.lib == "readability-lxml":
             from readability import Document
 
             response = requests.get(url, timeout=10)
             doc = Document(response.content)
-            return doc.summary()
+            return response.text, doc.summary()
 
         elif self.lib == "jina.ai":
-            content = jina.get_markdown_content(
-                url, profile=self.profile, json=json)
+            raw_html, content = jina.get_markdown_content(
+                url, profile=self.profile, json=json, retriever=retriever)
 
             if self.profile["type"] in ("ollama", "openai"):
                 content = jina.strip_markdown(content)
@@ -52,7 +52,7 @@ class WebExtractor:
             if json:
                 return js.loads(content)
             else:
-                return content
+                return raw_html, content
 
         else:
             raise ValueError("Unknown extraction library: " + self.lib)
@@ -70,7 +70,7 @@ class WebExtractor:
 
         rdata = []
         for parsed_line in ndata if ndata is not None else self.lines:
-            url_data = self.extract(parsed_line["url"], json=True)
+            _, url_data = self.extract(parsed_line["url"], json=True)
             rdata.append({
                 "url": parsed_line["url"],
                 "date": parsed_line["date"] if "date" in parsed_line else url_data["date"],
@@ -110,4 +110,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     extractor = WebExtractor(args.library, args.profile)
-    print(extractor.extract(args.url, json=args.json))
+    _, content = extractor.extract(args.url, json=args.json)
+    print(content)
