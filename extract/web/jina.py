@@ -278,7 +278,7 @@ def get_markdown_content(
 
         try:
             response = client.chat.completions.create(
-                model=model or "ReaderLM-v2-BF16",
+                model=model or "ReaderLM-v2-Q8_0",
                 messages=prompt,
                 stream=False,
                 timeout=timeout
