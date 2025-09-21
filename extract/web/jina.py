@@ -339,8 +339,8 @@ def get_profile(profile_name: str = None):
     elif profile_name == "openai":
         return {
             "type": "openai",
-            "url": os.getenv("OPENAI_ENDPOINT"),
-            "token": os.getenv("OPENAI_TOKEN")
+            "base_url": os.getenv("OPENAI_ENDPOINT"),
+            "api_key": os.getenv("OPENAI_TOKEN")
         }
     elif profile_name == "ollama":
         return {
