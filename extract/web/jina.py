@@ -279,7 +279,7 @@ def get_markdown_content(
 
         try:
             response = client.chat.completions.create(
-                model=model or "ReaderLM-v2-BF16",
+                model=model or "ReaderLM-v2-Q8_0",
                 messages=prompt,
                 stream=False,
                 timeout=timeout,
@@ -340,8 +340,8 @@ def get_profile(profile_name: str = None):
     elif profile_name == "openai":
         return {
             "type": "openai",
-            "url": os.getenv("OPENAI_ENDPOINT"),
-            "token": os.getenv("OPENAI_TOKEN")
+            "base_url": os.getenv("OPENAI_ENDPOINT"),
+            "api_key": os.getenv("OPENAI_TOKEN")
         }
     elif profile_name == "ollama":
         return {
