@@ -32,20 +32,21 @@ class RetrievalError(Exception):
 
 
 def get_html_content(url: str, proxies: Optional[Dict[str, str]] = None, retriever: str = "requests"):
-    api_url = f"https://r.jina.ai/{url}"
     try:
         if retriever == "jina_api":
             headers = {"X-Return-Format": "html"}
             logger.info(
                 f"We will use Jina Reader to fetch the **raw HTML** from: {url}")
             response = requests.get(
-                api_url,
+                f"https://r.jina.ai/{url}",
                 proxies=proxies,
                 verify=False if proxies else True,
                 headers=headers,
                 timeout=10
             )
         elif retriever == "requests":
+            logger.info(
+                f"We will use requests library to fetch the **raw HTML** from: {url}")
             # CloudFlare tends to block this
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1"
@@ -281,7 +282,7 @@ def get_markdown_content(
                 model=model or "ReaderLM-v2-BF16",
                 messages=prompt,
                 stream=False,
-                timeout=timeout
+                timeout=timeout,
             )
 
             return html, response.choices[0].message.content
