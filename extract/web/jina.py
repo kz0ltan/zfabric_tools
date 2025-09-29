@@ -16,6 +16,7 @@ from typing import Dict, Optional
 import requests
 import ollama
 import openai
+from langchain_openai import ChatOpenAI
 
 ENV_PATH = "~/.config/zfabric/.env"
 
@@ -190,12 +191,16 @@ def _get_ollama_client(username: str, password: str, host: str):
 
 
 def _get_openai_client(url: str, token: str, max_retries=5):
+    """Deprecated"""
+    logger.warning(
+        "Deprecated: use ChatOpenAI from langchain_openai package instead!")
     return openai.OpenAI(api_key=token, base_url=url, max_retries=max_retries)
 
 
 def get_markdown_content(
     url: str,
     profile: Dict,
+    llm_client: ChatOpenAI = None,
     json: bool = False,
     schema: Dict = None,
     retriever: str = "requests"
@@ -275,20 +280,27 @@ def get_markdown_content(
         prompt = create_prompt(html, schema=js.dumps(
             extract_schema, indent=2) if json else None)
 
-        client = _get_openai_client(base_url, token, max_retries)
+        if llm_client is None:
+            llm_client = _get_openai_client(base_url, token, max_retries)
+            try:
+                response = llm_client.chat.completions.create(
+                    model=model or "ReaderLM-v2-Q8_0",
+                    messages=prompt,
+                    stream=False,
+                    timeout=timeout,
+                )
 
-        try:
-            response = client.chat.completions.create(
-                model=model or "ReaderLM-v2-Q8_0",
-                messages=prompt,
-                stream=False,
-                timeout=timeout,
-            )
-
-            return html, response.choices[0].message.content
-        except Exception as e:
-            logger.error("Error: " + str(e))
-            sys.exit(1)
+                return html, response.choices[0].message.content
+            except Exception as e:
+                logger.error("Error: " + str(e))
+                sys.exit(1)
+        else:
+            try:
+                response = llm_client.invoke(prompt)
+                return html, response.content
+            except Exception as e:
+                logger.error("Error: " + str(e))
+                sys.exit(1)
 
     else:
         raise ValueError("Unknown profile type: " + str(profile["type"]))

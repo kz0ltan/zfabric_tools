@@ -1,3 +1,3 @@
-from .web import WebExtractor
+from .extractor import WebExtractor
 
 __all__ = ["WebExtractor"]

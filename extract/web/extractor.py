@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from typing import List, Optional, Any, Union, Dict
 
 import requests
+from langchain_openai import ChatOpenAI
 
 from . import jina
 
@@ -17,8 +18,14 @@ ENV_PATH = "~/.config/zfabric/.env"
 
 
 class WebExtractor:
-    def __init__(self, lib: str = "jina.ai", profile: Optional[Union[str, Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        lib: str = "jina.ai",
+        profile: Optional[Union[str, Dict[str, Any]]] = None,
+        llm_client: ChatOpenAI = None
+    ):
         self.lib = lib
+        self.llm_client = llm_client
         if self.lib == "jina.ai":
             if isinstance(profile, Dict):
                 self.profile = profile
@@ -44,13 +51,18 @@ class WebExtractor:
 
         elif self.lib == "jina.ai":
             raw_html, content = jina.get_markdown_content(
-                url, profile=self.profile, json=json, retriever=retriever)
+                url,
+                llm_client=self.llm_client,
+                profile=self.profile,
+                json=json,
+                retriever=retriever
+            )
 
             if self.profile["type"] in ("ollama", "openai"):
                 content = jina.strip_markdown(content)
 
             if json:
-                return js.loads(content)
+                return raw_html, js.loads(content)
             else:
                 return raw_html, content
 
@@ -85,30 +97,3 @@ class WebExtractor:
             })
 
         return rdata
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="CLI tool to extract content using libraries")
-    parser.add_argument("url", help="Content URL")
-    parser.add_argument(
-        "-l",
-        "--library",
-        required=False,
-        choices=["newspaper3k", "readability-lxml", "jina.ai"],
-        default="jina.ai",
-    )
-    parser.add_argument(
-        "-r",
-        "--profile",
-        default="jina.ai",
-        required=False,
-        help="Profile to use for Jina.ai (default jina.ai API, ollama is the alternative)",
-    )
-    parser.add_argument("-j", "--json", default=False,
-                        action="store_true", help="JSON output")
-
-    args = parser.parse_args()
-    extractor = WebExtractor(args.library, args.profile)
-    _, content = extractor.extract(args.url, json=args.json)
-    print(content)
