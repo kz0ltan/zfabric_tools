@@ -4,6 +4,7 @@ import requests
 from unittest.mock import MagicMock, patch
 
 import pytest
+from extract.web.exceptions import RetrievalError
 
 from extract.web.extractor import WebExtractor
 
@@ -99,3 +100,30 @@ def test_extract_jina_ai_path(extractor, dummy_html):
     extractor.jina.strip_markdown.assert_called_once()
     assert html == dummy_html
     assert content == "clean markdown"
+
+
+def test_retrieve_with_fallback_all_fail(extractor):
+    """All retrievers raise an exception – should raise RetrievalError."""
+    # requests fails
+    with patch("requests.get", side_effect=requests.exceptions.RequestException("fail")):
+        # jina_api (or any other retriever) also fails
+        extractor.jina = MagicMock()
+        extractor.jina.get_html_content.side_effect = Exception("fail")
+        with pytest.raises(RetrievalError):
+            extractor.retrieve_with_fallback(
+                "http://example.com", retrievers=["requests", "jina_api"]
+            )
+
+
+def test_retrieve_with_fallback_second_success(extractor, dummy_html):
+    """First retriever fails, second succeeds – should return the second's result."""
+    # requests fails
+    with patch("requests.get", side_effect=requests.exceptions.RequestException("fail")):
+        # jina_api succeeds
+        extractor.jina = MagicMock()
+        extractor.jina.get_html_content.return_value = dummy_html
+        result = extractor.retrieve_with_fallback(
+            "http://example.com", retrievers=["requests", "jina_api"]
+        )
+        assert result == dummy_html
+        extractor.jina.get_html_content.assert_called_once()
