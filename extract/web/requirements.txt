@@ -1,6 +1,7 @@
 python-dotenv
-readability-lxml
-newspaper3k
+trafilatura
+newspaper4k
 ollama
 requests
-openai
+langchain-openai
+langchain-core
