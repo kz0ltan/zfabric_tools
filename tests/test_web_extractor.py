@@ -1,6 +1,7 @@
 import json
 import pathlib
 import requests
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
