@@ -7,6 +7,7 @@ from typing import List, Optional, Any, Union, Dict, Generator
 from urllib.parse import urlparse
 
 import requests
+import concurrent.futures
 from langchain_openai import ChatOpenAI
 
 from .jina import JinaAI
@@ -257,6 +258,34 @@ class WebExtractor:
         json: bool = False,
         retrievers: List[str] = []
     ) -> Generator[int, None, None]:
-        """Threaded extraction of urls"""
+        """Threaded extraction of urls using a ThreadPoolExecutor.
 
-        # TODO: implement this with threadpoolexecutor
+        Yields a tuple ``(index, result)`` where ``index`` is the position of the
+        URL in the original ``urls`` list and ``result`` is the value returned by
+        :meth:`extract`. Errors during extraction are logged and ``None`` is
+        yielded for that index.
+        """
+        # Map each URL to its index so we can return results in order of the
+        # original list, even though extraction runs concurrently.
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_index = {
+                executor.submit(
+                    self.extract,
+                    url,
+                    extractor,
+                    json,
+                    retrievers,
+                ): idx
+                for idx, url in enumerate(urls)
+            }
+
+            for future in concurrent.futures.as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    self.logger.error(
+                        f"Error extracting URL at index {idx}: {e}"
+                    )
+                    result = None
+                yield idx, result
