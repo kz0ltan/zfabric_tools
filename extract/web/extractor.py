@@ -3,16 +3,15 @@
 import argparse
 import json as js
 from urllib.parse import urlparse
-from typing import List, Optional, Any, Union, Dict
+from typing import List, Optional, Any, Union, Dict, Generator
+from urllib.parse import urlparse
 
 import requests
 from langchain_openai import ChatOpenAI
 
 from .jina import JinaAI
-from .exceptions import RetrievalError
+from .exceptions import RetrievalError, FailedRetrievalError
 from .common import set_up_logging
-
-ENV_PATH = "~/.config/zfabric/.env"
 
 # https://stackoverflow.com/questions/4672060/web-scraping-how-to-identify-main-content-on-a-webpage
 # https://github.com/scrapinghub/article-extraction-benchmark
@@ -20,7 +19,7 @@ ENV_PATH = "~/.config/zfabric/.env"
 
 class WebExtractor:
 
-    PREFERRED_LIB = {
+    PREFERENCES = {
         "thehackernews.com": {
             "extractor": "newspaper3k"
         },
@@ -32,28 +31,31 @@ class WebExtractor:
 
     def __init__(
         self,
-        lib: str = "preferred",
-        default_lib: str = "jina.ai",
+        extractor: str = "preferred",
+        fallback_extractor: str = "jina.ai",
         profile: Optional[Union[str, Dict[str, Any]]] = None,
         llm_client: ChatOpenAI = None,
-        retriever: str = "requests",
+        retrievers: List[str] = ["requests", "preferred"],
+        fallback_retriever: str = "jina_api",
         proxy: str = None,
         loglevel: int = 20  # logging.INFO
     ):
         """Extract text content from web pages
-        - lib: library to use: preferred/newspaper3k/readability-lxml/jina.ai
-        - default_lib: fallback to this if there is no preference for the requested domain
+        - extractor: library to use for text extraction from raw HTML
+        - fallback_extractor: fallback to this if there is no preference for the requested domain
         - profile: profile loaded when using jina.ai lib
         - llm_client: client to use for local jina.ai deployment
         - retriever: retriever to use to download raw html
+        - default_retriever: fallback to this if there is not preference for the requested domain
         """
 
-        self.lib = lib
-        self.default_lib = default_lib
+        self.extractor = extractor
+        self.fallback_extractor = fallback_extractor
         self.llm_client = llm_client
         self._profile_to_load = profile
         self._profile = None
-        self.retriever = retriever
+        self.retrievers = retrievers
+        self.fallback_retriever = fallback_retriever
         self.proxy = proxy
         self.logger = set_up_logging(loglevel)
 
@@ -77,20 +79,43 @@ class WebExtractor:
 
         return self._profile
 
-    def _select_lib(self, lib):
-        if lib:
-            return lib
-        elif self.lib == "preferred":
-            from urllib.parse import urlparse
-            hostname = urlparse(url).hostname
-            if hostname in self.PREFERRED_LIB:
-                host_pref = self.PREFERRED_LIB["hostname"]
-                return host_pref.get("extractor", self.default_lib)
-                # selected_retriever = host_pref.get("retriever", retriever)
-            else:
-                return self.default_lib
+    def _get_preferred(self, url: str, mod: str):
+        if mod == "extractor":
+            default = self.fallback_extractor
+        elif mod == "retriever":
+            default = self.fallback_retriever
         else:
-            return self.lib
+            raise ValueError("Mod can only be 'extractor/retriever'")
+
+        hostname = urlparse(url).hostname
+        if hostname in self.PREFERENCES:
+            host_pref = self.PREFERENCES[hostname]
+            return host_pref.get(mod, default)
+
+        return default
+
+    def _select_extractor(self, extractor: str, url: str):
+        if extractor:
+            if extractor == "preferred":
+                return self._get_preferred(url, "extractor")
+            return extractor
+        elif self.extractor == "preferred":
+            return self._get_preferred(url, "extractor")
+        else:
+            return self.extractor
+
+    def _select_retrievers(self, retrievers: List[str], url: str):
+        if len(retrievers) == 0:
+            return self._select_retrievers(self.retrievers, url)
+
+        r_retrievers = []
+        for retriever in retrievers:
+            if retriever == "preferred":
+                r_retrievers.append(self._get_preferred(url, "retriever"))
+            else:
+                r_retrievers.append(retriever)
+
+        return r_retrievers
 
     def retrieve(
             self,
@@ -126,6 +151,8 @@ class WebExtractor:
             return self.jina.get_html_content(url, self.proxies)
         elif retriever == "playwright":
             try:
+                self.logger.info(
+                    f"Using playwright to fetch **raw HTML** from: {url}")
                 from playwright.sync_api import sync_playwright
                 with sync_playwright as p:
                     browser = p.chromium.launch()
@@ -154,26 +181,31 @@ class WebExtractor:
             retrievers: List[str] = ["requests", "jina_api"],
     ) -> str:
 
+        if len(retrievers) == 0:
+            retrievers = self.retrievers
+
         for retriever in retrievers:
             try:
                 return self.retrieve(url, retriever)
             except:
                 continue
 
+        raise FailedRetrievalError("All retrieval methods failed")
+
     def extract(
         self,
         url: str,
-        lib: Optional[str] = None,
+        extractor: Optional[str] = None,
         json: bool = False,
-        retriever: Union[str, List[str]] = ["requests", "jina_api"]
+        retrievers: List[str] = []
     ) -> str:
         """Extract content from url using lib"""
 
-        retrievers = retriever if isinstance(retriever, list) else [retriever]
+        retrievers = self._select_retrievers(retrievers, url)
         html_content = self.retrieve_with_fallback(url, retrievers)
-        selected_lib = self._select_lib(lib)
+        selected_extractor = self._select_extractor(extractor, url)
 
-        if selected_lib == "newspaper4k":
+        if selected_extractor == "newspaper4k":
             from newspaper import Article
 
             article = Article(url)
@@ -182,7 +214,7 @@ class WebExtractor:
             article.parse()
             return html_content, article.text
 
-        elif selected_lib == "trafilatura":
+        elif selected_extractor == "trafilatura":
             import trafilatura
             text = trafilatura.extract(
                 html_content,
@@ -195,54 +227,36 @@ class WebExtractor:
                 output_format="json" if json else "markdown",
                 url=url
             )
-            return html_content, text
+            return html_content, js.loads(text) if json else text
 
-        elif selected_lib == "jina.ai":
-            text = self.jina.get_markdown_content(
+        elif selected_extractor == "jina.ai":
+            content = self.jina.get_markdown_content(
                 url,
                 llm_client=self.llm_client,
                 profile=self.profile,
                 json=json,
-                retriever=retriever,
                 proxies=self.proxies
             )
 
             if self.profile["type"] in ("ollama", "openai"):
-                text = self.jina.strip_markdown(content)
+                content = self.jina.strip_markdown(content)
 
             if json:
-                return raw_html, js.loads(content)
+                return html_content, js.loads(content)
             else:
                 return html_content, content
 
         else:
-            raise ValueError("Unknown extraction library: " + self.lib)
+            raise ValueError(
+                "Unknown extraction library: " + selected_extractor)
 
-    def load_documents(self, path: str):
-        with open(path, "r") as f:
-            self.lines = [js.loads(line.strip())
-                          for line in f if not line.strip().startswith("#")]
+    def bulk_extract(
+        self,
+        urls: List[str],
+        extractor: Optional[str] = None,
+        json: bool = False,
+        retrievers: List[str] = []
+    ) -> Generator[int, None, None]:
+        """Threaded extraction of urls"""
 
-        return self.lines
-
-    def get_documents(self, path: str = None, ndata: Optional[List] = None):
-        if path is not None:
-            self.load_documents(path)
-
-        rdata = []
-        for parsed_line in ndata if ndata is not None else self.lines:
-            _, url_data = self.extract(parsed_line["url"], json=True)
-            rdata.append({
-                "url": parsed_line["url"],
-                "date": parsed_line["date"] if "date" in parsed_line else url_data["date"],
-                "title": parsed_line["title"] if "title" in parsed_line else url_data["title"],
-                "summary": parsed_line["summary"]
-                if "summary" in parsed_line
-                else url_data["summary"],
-                "tags": parsed_line["tags"]
-                if "tags" in parsed_line
-                else [] + [urlparse(parsed_line["url"]).hostname] + url_data["keywords"],
-                "source": "url_queue",
-            })
-
-        return rdata
+        # TODO: implement this with threadpoolexecutor
