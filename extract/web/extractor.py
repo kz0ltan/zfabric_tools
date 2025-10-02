@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import requests
 import concurrent.futures
+import threading
+from collections import defaultdict
 from langchain_openai import ChatOpenAI
 
 from .jina import JinaAI
@@ -256,21 +258,36 @@ class WebExtractor:
         urls: List[str],
         extractor: Optional[str] = None,
         json: bool = False,
-        retrievers: List[str] = []
+        retrievers: List[str] = [],
+        max_workers_per_host: int = 2,
     ) -> Generator[int, None, None]:
         """Threaded extraction of urls using a ThreadPoolExecutor.
+
+        Limits the number of concurrent workers per hostname to ``max_workers_per_host``
+        to avoid overloading a single target server.
 
         Yields a tuple ``(index, result)`` where ``index`` is the position of the
         URL in the original ``urls`` list and ``result`` is the value returned by
         :meth:`extract`. Errors during extraction are logged and ``None`` is
         yielded for that index.
         """
+        # Semaphore per hostname to limit concurrency per host
+        host_semaphores = defaultdict(
+            lambda: threading.Semaphore(max_workers_per_host)
+        )
+
+        def _extract_with_limit(url: str, extractor: Optional[str], json: bool, retrievers: List[str]):
+            hostname = urlparse(url).hostname
+            sem = host_semaphores[hostname]
+            with sem:
+                return self.extract(url, extractor, json, retrievers)
+
         # Map each URL to its index so we can return results in order of the
         # original list, even though extraction runs concurrently.
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_to_index = {
                 executor.submit(
-                    self.extract,
+                    _extract_with_limit,
                     url,
                     extractor,
                     json,
