@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import requests
 import concurrent.futures
 import threading
+import time
 from collections import defaultdict
 from langchain_openai import ChatOpenAI
 
@@ -47,7 +48,9 @@ class WebExtractor:
         retrievers: List[str] = ["requests", "preferred"],
         fallback_retriever: str = "jina_api",
         proxy: str = None,
-        loglevel: int = 20  # logging.INFO
+        loglevel: int = 20,  # logging.INFO
+        max_requests_per_domain: int = 2,
+        min_interval_per_domain: float = 1.0,
     ):
         """Extract text content from web pages
         - extractor: library to use for text extraction from raw HTML
@@ -67,6 +70,18 @@ class WebExtractor:
         self.fallback_retriever = fallback_retriever
         self.proxy = proxy
         self.logger = set_up_logging(loglevel)
+
+        # ---------- rate‑limiting state ----------
+        self.max_requests_per_domain = max_requests_per_domain
+        self.min_interval_per_domain = min_interval_per_domain
+        # semaphore per hostname to limit concurrent requests
+        self._domain_semaphores = defaultdict(
+            lambda: threading.Semaphore(self.max_requests_per_domain)
+        )
+        # timestamp of last request per hostname
+        self._last_request_ts = defaultdict(lambda: 0.0)
+        self._ts_lock = threading.Lock()
+        # -----------------------------------------
 
         self.jina = JinaAI(
             self.jina_profile,
@@ -137,6 +152,42 @@ class WebExtractor:
 
         return r_retrievers
 
+    # ------------------------------------------------------------------
+    # Rate‑limiting helpers
+    # ------------------------------------------------------------------
+    def _wait_if_necessary(self, hostname: str) -> None:
+        """
+        Sleep until at least ``self.min_interval_per_domain`` seconds have passed
+        since the previous request to *hostname*.
+        """
+        with self._ts_lock:
+            last_ts = self._last_request_ts[hostname]
+            now = time.time()
+            elapsed = now - last_ts
+            wait = self.min_interval_per_domain - elapsed
+
+            # Record the timestamp of this request (or the future time after sleep)
+            self._last_request_ts[hostname] = now
+
+        if wait > 0:
+            self.logger.debug(
+                f"Rate‑limit: sleeping {wait:.2f}s before next request to {hostname}"
+            )
+            time.sleep(wait)
+
+    def _rate_limited_get(self, url: str, **kwargs) -> requests.Response:
+        """
+        Perform a GET request respecting both concurrency and time‑based limits.
+        """
+        hostname = urlparse(url).hostname
+        # concurrency gate
+        sem = self._domain_semaphores[hostname]
+        with sem:
+            # time‑based gate
+            self._wait_if_necessary(hostname)
+            # actual request
+            return requests.get(url, **kwargs)
+
     def retrieve(
             self,
             url: str,
@@ -152,12 +203,12 @@ class WebExtractor:
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
                     " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1"
                 }
-                response = requests.get(
+                response = self._rate_limited_get(
                     url,
                     proxies=self.proxies,
                     verify=False if self.proxy else True,
                     headers=headers,
-                    timeout=10
+                    timeout=10,
                 )
                 response.raise_for_status()
                 self.logger.info(
