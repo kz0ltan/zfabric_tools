@@ -430,12 +430,84 @@ class WebExtractor:
         self,
         html_contents: Generator[Dict[Union[int, str], str], None, None],
         json: bool = False,
-        schema: Dict[str, Any] = None,
-        max_workers: int = 16  # total workers for all clients
-    ) -> Generator[str, None, None]:
-        for i, html_content in enumerate(html_contents):
-            _, content = self.extract(
-                html_content["url"],
-                html_content=html_content["html_content"]
-            )
-            breakpoint()
+        schema: Optional[Dict[str, Any]] = None,
+        max_workers: int = 16,
+        jina_batch_size: int = 20,
+    ) -> Generator[Tuple[int, str, Any], None, None]:
+        """
+        Stream‑based bulk extraction.
+
+        * For each input item we decide which extractor to use.
+        * Non‑Jina extractors are processed immediately via ``self.extract``.
+        * Items that require the ``jina.ai`` extractor are sent to a
+          ``JinaAI.get_markdown_content_batched`` generator, which yields
+          results as soon as a batch is processed.
+        * The generator yields ``(index, url, extracted_content)`` tuples
+          in the order they become available.
+        """
+        # ------------------------------------------------------------------
+        # 1️⃣  Prime the Jina generator (synchronous)
+        # ------------------------------------------------------------------
+        jina_gen = self.jina.get_markdown_content_batched(
+            json=json,
+            schema=schema,
+            max_workers=max_workers,
+        )
+        # Prime – the first ``next`` yields a dummy value that we ignore
+        next(jina_gen)
+
+        # ------------------------------------------------------------------
+        # 2️⃣  Iterate over the incoming stream
+        # ------------------------------------------------------------------
+        for idx, item in enumerate(html_contents):
+            if "url" not in item:
+                self.logger.warning(f"Item {idx} missing 'url' – skipping")
+                continue
+
+            url = item["url"]
+            html = item.get("html_content")
+            preferred = self._get_preferred(url, "extractor")
+
+            if preferred == "jina.ai":
+                # Send a single‑item batch to the Jina generator.
+                # ``send`` expects a list of HTML strings.
+                try:
+                    jina_results = jina_gen.send([html])
+                except StopIteration:
+                    raise RuntimeError("Jina generator terminated prematurely")
+
+                # The result list has exactly one element (the one we sent)
+                result = jina_results[0]
+                content = result.get("content")
+                if json and content is not None:
+                    try:
+                        content = js.loads(content)
+                    except Exception as exc:   # pragma: no‑cover
+                        self.logger.error(
+                            f"Failed to JSON‑decode Jina response for {url}: {exc}"
+                        )
+                        content = None
+                yield idx, url, content
+            else:
+                # Non‑Jina extractor – process immediately
+                try:
+                    _, content = self.extract(
+                        url,
+                        extractor=preferred,
+                        json=json,
+                        html_content=html,
+                    )
+                except Exception as exc:   # pragma: no‑cover
+                    self.logger.error(
+                        f"Extraction failed for {url} (idx={idx}): {exc}"
+                    )
+                    content = None
+                yield idx, url, content
+
+        # ------------------------------------------------------------------
+        # 3️⃣  Clean‑up – close the Jina generator
+        # ------------------------------------------------------------------
+        try:
+            jina_gen.close()
+        except Exception:   # pragma: no‑cover
+            pass

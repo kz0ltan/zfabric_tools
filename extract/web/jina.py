@@ -232,49 +232,71 @@ class JinaAI:
 
     def get_markdown_content_batched(
         self,
-        html_contents: List[str],
+        *,
         json: bool = False,
-        schema: Dict[str, Any] = None,
-        max_workers: int = 16  # total workers for all clients
-    ):
+        schema: Optional[Dict] = None,
+        max_workers: int = 16,
+    ) -> Generator[List[Dict[str, Any]], List[str], None]:
+        """
+        Synchronous generator that yields a list of Jina responses for each
+        batch of HTML strings sent via ``send()``.
+
+        Usage example:
+
+            gen = jina.get_markdown_content_batched(json=True)
+            next(gen)                     # prime the generator
+            batch1 = ["<html>…</html>", "<html>…</html>"]
+            results1 = gen.send(batch1)   # -> list of 2 dicts (ordered)
+
+            batch2 = ["<html>…</html>"]
+            results2 = gen.send(batch2)
+
+            gen.close()   # shuts down the internal executor
+        """
         if len(self.llm_clients) == 0:
             raise ValueError("Batching needs predefined llm_clients")
 
-        start_time = time.time()
-        results = []
+        # Create a long‑lived executor that will be reused for every batch
+        executor = ThreadPoolExecutor(max_workers=max_workers)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Prime the generator – the first ``send`` will deliver the first batch
+        batch: List[str] = yield []  # caller must call ``next(gen)`` first
+
+        while True:
+            if batch is None:                     # caller wants to stop
+                break
+
+            # Submit the current batch to the executor
             future_to_id = {
                 executor.submit(
                     self.get_markdown_content,
-                    html_content,
+                    html,
                     {"type": "openai"},
                     json=json,
                     schema=schema,
-                    proxies=self.proxies
-                ): i for i, content in enumerate(html_contents)
+                    proxies=self.proxies,
+                ): idx
+                for idx, html in enumerate(batch)
             }
 
-            for future in as_completed(future_to_id):
-                request_id = future_to_id[future]
+            # Collect results preserving the original order
+            results: List[Dict[str, Any]] = [None] * len(batch)  # type: ignore
+            for fut in as_completed(future_to_id):
+                idx = future_to_id[fut]
                 try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    results.append({
-                        "request_id": request_id,
-                        "error": str(e),
-                        "status": "error"
-                    })
+                    results[idx] = fut.result()
+                except Exception as exc:
+                    results[idx] = {
+                        "request_id": idx,
+                        "error": str(exc),
+                        "status": "error",
+                    }
 
-        results.sort(key=lambda x: x["request_id"])
+            # Yield the ordered list back to the caller and wait for the next batch
+            batch = yield results
 
-        end_time = time.time()
-        elapsed = end_time - start_time
-
-        self.logger.info(f"Batch finished in {elapsed}")
-
-        return results
+        # Clean‑up
+        executor.shutdown(wait=True)
 
     def get_markdown_content(
         self,
