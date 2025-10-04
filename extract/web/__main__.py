@@ -1,7 +1,9 @@
 import argparse
+import json
 import os
 
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 from web.extractor import WebExtractor
 
@@ -38,26 +40,27 @@ def main():
         "--extractor",
         required=False,
         choices=["preferred", "newspaper4k", "trafilatura", "jina.ai"],
-        default="preferred",
+        default=None
     )
     parser.add_argument(
+        "-r",
         "--retrievers",
         default=[],
         required=False,
         action="append",
-        choices=["requests", "jina_api", "playwright"],
+        choices=["preferred", "requests", "jina_api", "playwright"],
         help="What retrievers to use to get raw HTML content"
     )
 
     parser.add_argument(
-        "-r",
+        "-j",
         "--jina-profile",
         default="jina.ai",
         required=False,
         choices=["jina.ai", "openai"],
         help="Profile to load from env for Jina.ai, default: jina.ai",
     )
-    parser.add_argument("-j", "--json", default=False,
+    parser.add_argument("--json", default=False,
                         action="store_true", help="JSON output")
     parser.add_argument(
         "--config-path",
@@ -78,25 +81,31 @@ def main():
     args = parser.parse_args()
     load_dotenv(os.path.expanduser(ENV_PATH))
     llm_clients = get_llm_clients(args.config_path)
+
+    we_args = {}
+    if args.extractor:
+        we_args["extractor"] = args.extractor
+    if len(args.retrievers):
+        we_args["retrievers"] = args.retrievers
+
     extractor = WebExtractor(
-        args.extractor,
-        retrievers=args.retrievers,
+        **we_args,
         jina_profile=args.jina_profile,
-        llm_clients=llm_clients
+        llm_clients=llm_clients,
+        proxy=args.proxy
     )
     if args.bulk_url_path:
         content_generator = extractor.bulk_retrieve(
             load_urls(args.bulk_url_path),
             retrievers=args.retrievers
         )
-        for r in list(content_generator):
-            if r["status"] != "success":
-                print(r["error"] + " - " + r["url"])
-        breakpoint()
+        contents = extractor.bulk_extract(content_generator)
+        # for r in list(content_generator):
+        #    if r["status"] != "success":
+        #        print(r["error"] + " - " + r["url"])
     else:
         _, content = extractor.extract(args.url, json=args.json)
-
-    print(content)
+        print(content)
 
 
 if __name__ == '__main__':

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+from collections.abc import Callable
 import json as js
 from urllib.parse import urlparse
-from typing import List, Optional, Any, Union, Dict, Generator
+from typing import List, Optional, Any, Union, Dict, Generator, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -14,7 +15,7 @@ from collections import defaultdict
 from langchain_openai import ChatOpenAI
 
 from .jina import JinaAI
-from .exceptions import RetrievalError, FailedRetrievalError
+from .exceptions import RetrievalError, FailedRetrievalError, HTTPStatusError, ExtractionError
 from .common import set_up_logging
 
 # https://stackoverflow.com/questions/4672060/web-scraping-how-to-identify-main-content-on-a-webpage
@@ -23,17 +24,19 @@ from .common import set_up_logging
 
 class WebExtractor:
 
-    PREFERENCES = {
+    DOMAIN_SETTINGS = {
         "thehackernews.com": {
-            "extractor": "newspaper3k"
+            "retriever": "requests",
+            "extractor": "newspaper4k",
         },
         "www.darkreading.com": {
-            "retriever": "jina_api",
-            "extractor": "jina.ai"
+            "retriever": "playwright",
+            "extractor": "newspaper4k",
         },
         "www.bleepingcomputer.com": {
             "retriever": "requests",
-            "rate_limit": True,
+            "extractor": "newspaper4k",
+            "rate_limit": 2,
         }
     }
 
@@ -45,12 +48,14 @@ class WebExtractor:
         fallback_extractor: str = "jina.ai",
         jina_profile: Optional[Union[str, Dict[str, Any]]] = None,
         llm_clients: List[ChatOpenAI] = [],
-        retrievers: List[str] = ["requests", "preferred"],
+        retrievers: List[str] = ["preferred"],
         fallback_retriever: str = "jina_api",
         proxy: str = None,
         loglevel: int = 20,  # logging.INFO
-        max_requests_per_domain: int = 2,
-        min_interval_per_domain: float = 1.0,
+        default_max_concurrent_requests_per_domain: int = 5,
+        default_domain_rate_limit: float = 0.5,
+        user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+
     ):
         """Extract text content from web pages
         - extractor: library to use for text extraction from raw HTML
@@ -70,18 +75,13 @@ class WebExtractor:
         self.fallback_retriever = fallback_retriever
         self.proxy = proxy
         self.logger = set_up_logging(loglevel)
+        self.user_agent = user_agent
 
-        # ---------- rate‑limiting state ----------
-        self.max_requests_per_domain = max_requests_per_domain
-        self.min_interval_per_domain = min_interval_per_domain
-        # semaphore per hostname to limit concurrent requests
-        self._domain_semaphores = defaultdict(
-            lambda: threading.Semaphore(self.max_requests_per_domain)
-        )
+        self.default_max_concurrent_reqs_per_domain = default_max_concurrent_requests_per_domain
+        self.default_domain_rate_limit = default_domain_rate_limit
         # timestamp of last request per hostname
         self._last_request_ts = defaultdict(lambda: 0.0)
         self._ts_lock = threading.Lock()
-        # -----------------------------------------
 
         self.jina = JinaAI(
             self.jina_profile,
@@ -123,8 +123,8 @@ class WebExtractor:
             raise ValueError("Mod can only be 'extractor/retriever'")
 
         hostname = urlparse(url).hostname
-        if hostname in self.PREFERENCES:
-            host_pref = self.PREFERENCES[hostname]
+        if hostname in self.DOMAIN_SETTINGS:
+            host_pref = self.DOMAIN_SETTINGS[hostname]
             return host_pref.get(mod, default)
 
         return default
@@ -157,36 +157,40 @@ class WebExtractor:
     # ------------------------------------------------------------------
     def _wait_if_necessary(self, hostname: str) -> None:
         """
-        Sleep until at least ``self.min_interval_per_domain`` seconds have passed
+        Sleep until at least domain_rate_limit seconds have passed
         since the previous request to *hostname*.
         """
+        domain_rate_limit = self.DOMAIN_SETTINGS.get(
+            hostname, {}).get("rate_limit") or self.default_domain_rate_limit
+
         with self._ts_lock:
             last_ts = self._last_request_ts[hostname]
             now = time.time()
             elapsed = now - last_ts
-            wait = self.min_interval_per_domain - elapsed
+            wait = domain_rate_limit - elapsed
 
-            # Record the timestamp of this request (or the future time after sleep)
-            self._last_request_ts[hostname] = now
+            if wait > 0:
+                self.logger.debug(
+                    f"Rate‑limit: sleeping {wait:.2f}s before next request to {hostname}"
+                )
+                time.sleep(wait)
 
-        if wait > 0:
-            self.logger.debug(
-                f"Rate‑limit: sleeping {wait:.2f}s before next request to {hostname}"
-            )
-            time.sleep(wait)
+        # Record the timestamp of this request (or the future time after sleep)
+        self._last_request_ts[hostname] = now
 
-    def _rate_limited_get(self, url: str, **kwargs) -> requests.Response:
+    def _rate_limited_request(self, req_func: Callable, target_url: str, *args, **kwargs) -> Any:
         """
-        Perform a GET request respecting both concurrency and time‑based limits.
+        Perform a req_func respecting time‑based limits
         """
-        hostname = urlparse(url).hostname
-        # concurrency gate
-        sem = self._domain_semaphores[hostname]
-        with sem:
-            # time‑based gate
-            self._wait_if_necessary(hostname)
-            # actual request
-            return requests.get(url, **kwargs)
+        hostname = urlparse(target_url).hostname
+        self._wait_if_necessary(hostname)
+        return req_func(*args, **kwargs)
+
+    def _pw_goto_with_status_check(page, url, **kwargs):
+        response = page.goto(url, **kwargs)
+        if not response.ok:
+            raise HTTPStatusError(response)
+        return response
 
     def retrieve(
             self,
@@ -200,10 +204,11 @@ class WebExtractor:
                     f"Using requests to fetch **raw HTML** from: {url}")
                 # CloudFlare tends to block this
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
-                    " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1"
+                    "User-Agent": self.user_agent
                 }
-                response = self._rate_limited_get(
+                response = self._rate_limited_request(
+                    requests.get,
+                    url,
                     url,
                     proxies=self.proxies,
                     verify=False if self.proxy else True,
@@ -225,11 +230,18 @@ class WebExtractor:
                 self.logger.info(
                     f"Using playwright to fetch **raw HTML** from: {url}")
                 from playwright.sync_api import sync_playwright
-                with sync_playwright as p:
+                with sync_playwright() as p:
                     browser = p.chromium.launch(
-                        proxy={"server": self.proxy} if self.proxy else None)
-                    page = browser.new_page()
-                    _ = page.goto(url)  # before DOM gets modified by JS
+                        proxy={"server": self.proxy} if self.proxy else None
+                    )
+                    context = browser.new_context(
+                        user_agent=self.user_agent,
+                        ignore_https_errors=True if self.proxy else False
+                    )
+                    page = context.new_page()
+                    response = self._rate_limited_request(page.goto, url, url)
+                    if not response.ok:
+                        raise HTTPStatusError(response)
                     html = page.content()
                     self.logger.info(
                         f"Retrieved raw HTML content: {len(html)}")
@@ -262,6 +274,7 @@ class WebExtractor:
         for retriever in retrievers:
             try:
                 results.append({
+                    "url": url,
                     "html_content": self.retrieve(url, retriever),
                     "status": "success",
                     "retriever": retriever
@@ -269,12 +282,15 @@ class WebExtractor:
                 return results
             except Exception as e:
                 results.append({
+                    "url": url,
                     "html_content": None,
                     "status": "error",
-                    "error": str(e)
+                    "error": str(e),
+                    "retriever": retriever
                 })
 
-        raise FailedRetrievalError(results)
+        raise FailedRetrievalError(
+            "All retrieval methods failed: " + str(results))
 
     def extract(
         self,
@@ -283,7 +299,7 @@ class WebExtractor:
         json: bool = False,
         retrievers: List[str] = [],
         html_content: Optional[str] = None
-    ) -> str:
+    ) -> Tuple[str, str]:
         """
         Extract content from url using extractor, optionally retrieve
         content from URL first
@@ -300,7 +316,8 @@ class WebExtractor:
                 (selected_extractor != "jina.ai" or self.jina_profile["type"] != "jina.ai"):
             # jina.ai API does not need content, only URL
             retrievers = self._select_retrievers(retrievers, url)
-            html_content = self.retrieve_with_fallback(url, retrievers)
+            responses = self.retrieve_with_fallback(url, retrievers)
+            html_content = responses[0]["html_content"]
 
         if selected_extractor == "newspaper4k":
             from newspaper import Article
@@ -324,15 +341,18 @@ class WebExtractor:
                 output_format="json" if json else "markdown",
                 url=url
             )
+            if text is None:
+                raise ExtractionError("Trafilatura failed to extract text")
             return html_content, js.loads(text) if json else text
 
         elif selected_extractor == "jina.ai":
-            content = self.jina.get_markdown_content(
+            response = self.jina.get_markdown_content(
                 html_content,
                 url=url,
                 json=json,
-                proxies=self.proxies
             )
+
+            content = response["content"]
 
             if self.jina_profile["type"] in ("openai",):
                 content = self.jina.strip_markdown(content)
@@ -350,33 +370,31 @@ class WebExtractor:
         self,
         urls: List[str],
         retrievers: List[str] = [],
-        max_workers_per_host: int = 2,
+        max_workers_per_host: Optional[int] = None
     ) -> Generator[int, None, None]:
         """Threaded retrieval of HTML content from urls using a ThreadPoolExecutor.
 
         Limits the number of concurrent workers per hostname to ``max_workers_per_host``
         to avoid overloading a single target server.
-
-        Yields a tuple ``(index, result)`` where ``index`` is the position of the
-        URL in the original ``urls`` list and ``result`` is the value returned by
-        the retrieval. Errors during retrieval are logged and ``None`` is
-        yielded for that index if all retrievers fail.
         """
-        # Semaphore per hostname to limit concurrency per host
-        host_semaphores = defaultdict(
-            lambda: threading.Semaphore(max_workers_per_host)
+        max_workers = max_workers_per_host or self.default_max_concurrent_reqs_per_domain
+
+        # semaphore per hostname to limit concurrent requests
+        self._domain_semaphores = defaultdict(
+            lambda: threading.Semaphore(max_workers)
         )
 
         def _retrieve_with_limit(url: str, retrievers: List[str]):
             hostname = urlparse(url).hostname
-            sem = host_semaphores[hostname]
+            sem = self._domain_semaphores[hostname]
             h_retrievers = self._select_retrievers(retrievers, url)
             with sem:
                 return self.retrieve_with_fallback(url, h_retrievers)
 
         # Map each URL to its index so we can return results in order of the
         # original list, even though retrieval runs concurrently.
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(urls) * max_workers) as executor:
             future_to_index = {
                 executor.submit(
                     _retrieve_with_limit,
@@ -390,12 +408,11 @@ class WebExtractor:
                 idx = future_to_index[future]
                 try:
                     html_content = future.result()
-                    result = {
-                        "id": idx,
-                        "url": urls[idx],
-                        "status": "success",
-                        "html_content": html_content
-                    }
+                    if len(html_content):
+                        result = html_content[-1]
+                        result["id"] = idx
+                    else:
+                        raise Exception("No retrieval results were found")
                 except Exception as e:
                     self.logger.error(
                         f"Error retrieving URL at index {idx}: {e}"
@@ -408,3 +425,17 @@ class WebExtractor:
                         "error": str(e)
                     }
                 yield result
+
+    def bulk_extract(
+        self,
+        html_contents: List[Dict[Union[int, str], str]],
+        json: bool = False,
+        schema: Dict[str, Any] = None,
+        max_workers: int = 16  # total workers for all clients
+    ) -> Generator[str, None, None]:
+        for i, html_content in enumerate(html_contents):
+            _, content = self.extract(
+                html_content["url"],
+                html_content=html_content["html_content"]
+            )
+            breakpoint()

@@ -63,6 +63,7 @@ class JinaAI:
         """
         - profile: Used if llm_clients are NOT set
         """
+        self.profile = profile
         self.logger = set_up_logging(loglevel)
         self._profile_client = None
         self.proxies = proxies
@@ -193,9 +194,11 @@ class JinaAI:
             f"{username}:{password}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
 
-    @staticmethod
     def _get_openai_client_from_profile(
-            profile: Dict[str, str], proxies: Optional[Dict[str, str]] = None):
+            self,
+            profile: Dict[str, str],
+            proxies: Optional[Dict[str, str]] = None
+    ) -> ChatOpenAI:
 
         if self._profile_client:
             return self._profile_client
@@ -278,6 +281,7 @@ class JinaAI:
         url: Optional[str] = None,  # for jina.ai
         json: bool = False,
         schema: Dict[str, Any] = None,
+        max_retries=3
     ):
         extract_schema = (
             {
@@ -315,11 +319,16 @@ class JinaAI:
             )
 
             response.raise_for_status()
-            return response.text
+            return {
+                "type": "jina.ai",
+                "content": response.text,
+                "status": "success",
+                "attempt": attempt + 1
+            }
 
         elif self.profile["type"] == "openai":
 
-            clean_html = clean_html(
+            clean_html = self.clean_html(
                 html_content,
                 clean_svg=True,
                 clean_base64=True
@@ -344,25 +353,25 @@ class JinaAI:
 
                 try:
                     template = ChatPromptTemplate.from_messages(prompt)
-                    chain = template | client
+                    chain = template | client["client"]
                     response = chain.invoke({})
                     return {
-                        "request_id": request_id,
-                        "client": client.base_url,
-                        "response": response.content,
+                        "type": "openai",
+                        "client": client["client"].openai_api_base,
+                        "content": response.content,
                         "status": "success",
                         "attempt": attempt + 1
                     }
                 except Exception as e:
                     self.logger.error(
-                        f"Error on llm client {client.base_url}: " + str(e))
+                        f"Error on llm client {client["client"].openai_api_base}: " + str(e))
 
                     if attempt < max_retries - 1:
                         time_sleep(1)
                     continue
 
             return {
-                "request_id": request_id,
+                "type": "openai",
                 "error": f"Failed after {max_retries} attempts",
                 "status": "error"
             }
