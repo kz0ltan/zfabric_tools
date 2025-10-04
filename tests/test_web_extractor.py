@@ -49,12 +49,14 @@ def test_retrieve_jina_api_success(extractor, dummy_html):
 def test_extract_jina_ai_path(extractor, dummy_html):
     # Mock the JinaAI methods used in extract
     extractor.jina = MagicMock()
-    extractor.jina.get_markdown_content.return_value = "markdown content"
+    extractor.jina.get_markdown_content.return_value = {
+        "content": "markdown content"}
     extractor.jina.strip_markdown.return_value = "clean markdown"
-    extractor._profile = {"type": "openai"}  # triggers strip_markdown
+    extractor._jina_profile = {"type": "openai"}  # triggers strip_markdown
 
     # Mock retrieve_with_fallback to return dummy_html
-    extractor.retrieve_with_fallback = MagicMock(return_value=dummy_html)
+    extractor.retrieve_with_fallback = MagicMock(
+        return_value=[{"html_content": dummy_html}])
 
     html, content = extractor.extract(
         "http://example.com", extractor="jina.ai", json=False, retrievers=["requests"]
@@ -89,7 +91,7 @@ def test_retrieve_with_fallback_uses_requests_first(extractor, dummy_html):
         result = extractor.retrieve_with_fallback(
             "http://example.com", retrievers=["requests", "jina_api"]
         )
-        assert result == dummy_html
+        assert result[0]["html_content"] == dummy_html
         extractor.jina.get_html_content.assert_not_called()
 
 
@@ -104,7 +106,7 @@ def test_retrieve_with_fallback_falls_back_to_jina(extractor, dummy_html):
         result = extractor.retrieve_with_fallback(
             "http://example.com", retrievers=["requests", "jina_api"]
         )
-        assert result == dummy_html
+        assert result[1]["html_content"] == dummy_html
         extractor.jina.get_html_content.assert_called_once()
 
 
@@ -114,8 +116,15 @@ def test_retrieve_with_fallback_falls_back_to_jina(extractor, dummy_html):
 
 
 def test_get_preferred_extractor_and_retriever():
+    DOMAIN_SETTINGS = {
+        "www.testdomain.com": {
+            "retriever": "jina_api",
+            "extractor": "jina.ai",
+        }
+    }
     we = WebExtractor()
-    url = "https://www.darkreading.com/some-article"
+    we.DOMAIN_SETTINGS = DOMAIN_SETTINGS
+    url = "https://www.testdomain.com/some-article"
     assert we._get_preferred(url, "extractor") == "jina.ai"
     assert we._get_preferred(url, "retriever") == "jina_api"
 
@@ -128,27 +137,34 @@ def test_get_preferred_fallback():
 
 
 def test_profile_string_loads_via_jina(monkeypatch):
-    we = WebExtractor(profile="my_profile")
-    dummy = {"type": "openai", "model": "gpt-4"}
-    monkeypatch.setattr(we.jina, "get_profile", lambda name: dummy)
+    we = WebExtractor(jina_profile="openai")
+    dummy = {'type': 'openai', 'base_url': None,
+             'api_key': None, 'model': None}
+    monkeypatch.setattr(we.jina, "get_profile_from_env", lambda name: dummy)
 
     # First access triggers JinaAI.get_profile
-    assert we.profile == dummy
+    assert we.jina_profile == dummy
     # Second access should use cached value
     with monkeypatch.context() as m:
-        m.setattr(we.jina, "get_profile",
+        m.setattr(we.jina, "get_profile_from_env",
                   lambda _: pytest.fail("should not be called"))
-        assert we.profile == dummy
+        assert we.jina_profile == dummy
 
 
 def test_profile_dict_is_used_directly():
-    we = WebExtractor(profile={"type": "ollama"})
-    assert we.profile == {"type": "ollama"}
+    we = WebExtractor(jina_profile={"type": "openai"})
+    assert we.jina_profile == {"type": "openai"}
 
 
 def test_select_extractor_preferred():
+    DOMAIN_SETTINGS = {
+        "www.testdomain.com": {
+            "retriever": "jina_api",
+        }
+    }
     we = WebExtractor()
-    url = "https://www.darkreading.com/article"
+    we.DOMAIN_SETTINGS = DOMAIN_SETTINGS
+    url = "https://www.testdomain.com/article"
     assert we._select_extractor("preferred", url) == we.fallback_extractor
 
 
@@ -168,8 +184,14 @@ def test_select_retrievers_empty_uses_instance_default():
 
 
 def test_select_retrievers_preferred_keyword():
+    DOMAIN_SETTINGS = {
+        "www.testdomain.com": {
+            "retriever": "jina_api",
+        }
+    }
     we = WebExtractor()
-    url = "https://www.darkreading.com"
+    we.DOMAIN_SETTINGS = DOMAIN_SETTINGS
+    url = "https://www.testdomain.com"
     assert we._select_retrievers(["preferred"], url) == ["jina_api"]
 
 
@@ -191,14 +213,15 @@ def test_retrieve_playwright_missing_module(monkeypatch):
 
 def test_extract_unknown_extractor_raises():
     we = WebExtractor()
-    we.retrieve_with_fallback = MagicMock(return_value="<html></html>")
+    we.retrieve_with_fallback = MagicMock(
+        return_value=[{"html_content": "<html></html>"}])
     with pytest.raises(ValueError, match="Unknown extraction library"):
         we.extract("http://example.com", extractor="nonexistent")
 
 
 def test_extract_newspaper4k(monkeypatch):
     we = WebExtractor()
-    dummy_html = "<html><body>...</body></html>"
+    dummy_html = [{"html_content": "<html><body>...</body></html>"}]
     dummy_text = "Article body"
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
@@ -206,20 +229,20 @@ def test_extract_newspaper4k(monkeypatch):
         def __init__(self, url): pass
         def set_html(self, html): pass
         def parse(self): pass
-        @property
+        @ property
         def text(self): return dummy_text
 
     monkeypatch.setitem(sys.modules, "newspaper",
                         MagicMock(Article=DummyArticle))
 
     html, text = we.extract("http://example.com", extractor="newspaper4k")
-    assert html == dummy_html
+    assert html == dummy_html[0]["html_content"]
     assert text == dummy_text
 
 
 def test_extract_trafilatura_markdown(monkeypatch):
     we = WebExtractor()
-    dummy_html = "<html>...</html>"
+    dummy_html = [{"html_content": "<html>...</html>"}]
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
     dummy_md = "## Title\\nContent"
@@ -233,7 +256,7 @@ def test_extract_trafilatura_markdown(monkeypatch):
 
 def test_extract_trafilatura_json(monkeypatch):
     we = WebExtractor()
-    dummy_html = "<html>...</html>"
+    dummy_html = [{"html_content": "<html>...</html>"}]
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
     dummy_json = {"title": "Title", "content": "Content"}
@@ -249,14 +272,14 @@ def test_extract_trafilatura_json(monkeypatch):
 
 
 def test_extract_jina_ai_json(monkeypatch):
-    we = WebExtractor(profile={"type": "openai"})
-    dummy_html = "<html></html>"
+    we = WebExtractor(jina_profile={"type": "openai"})
+    dummy_html = [{"html_content": "<html></html>"}]
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
     json_str = json.dumps({"summary": "test"})
     markdown_str = f'```markdown\n{json_str}\n```'
     we.jina = MagicMock()
-    we.jina.get_markdown_content.return_value = markdown_str
+    we.jina.get_markdown_content.return_value = {"content": markdown_str}
     we.jina.strip_markdown.return_value = json_str
 
     html, data = we.extract("http://example.com",
@@ -267,7 +290,8 @@ def test_extract_jina_ai_json(monkeypatch):
 
 def test_extract_uses_fallback_extractor():
     we = WebExtractor(fallback_extractor="trafilatura")
-    we.retrieve_with_fallback = MagicMock(return_value="<html></html>")
+    we.retrieve_with_fallback = MagicMock(
+        return_value=[{"html_content": "<html>asdf</html>"}])
     we.jina = MagicMock()
     we.jina.get_markdown_content.return_value = "md"
 
@@ -290,6 +314,7 @@ def test_retrieve_with_fallback_empty_list_uses_instance_default(monkeypatch):
     monkeypatch.setattr(we, "retrieve", fake_retrieve)
 
     result = we.retrieve_with_fallback("http://example.com", retrievers=[])
+    result = result[0]["html_content"]
     assert result == dummy_html
     assert called == ["requests"]
 
