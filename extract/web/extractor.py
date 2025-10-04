@@ -32,7 +32,7 @@ class WebExtractor:
             "extractor": "jina.ai"
         },
         "www.bleepingcomputer.com": {
-            "retriever": "requests"
+            "retriever": "requests",
             "rate_limit": True,
         }
     }
@@ -64,7 +64,7 @@ class WebExtractor:
         self.extractor = extractor
         self.fallback_extractor = fallback_extractor
         self.llm_clients = llm_clients
-        self._saved_jina_profile = jina_profile or self.DEFAULT_JINA_PFORILE
+        self._saved_jina_profile = jina_profile or self.DEFAULT_JINA_PROFILE
         self._jina_profile = None
         self.retrievers = retrievers
         self.fallback_retriever = fallback_retriever
