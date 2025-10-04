@@ -8,36 +8,94 @@ from web.extractor import WebExtractor
 ENV_PATH = "~/.config/zfabric/.env"
 
 
+def get_llm_clients(config_path: str):
+    if not config_path:
+        return []
+
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    clients = [ChatOpenAI(**c) for c in config["clients"]]
+    return clients
+
+
+def load_urls(url_path: str):
+    lines = []
+    with open(url_path, encoding='utf-8') as f:
+        for line in f:
+            sline = line.strip()
+            if sline:
+                lines.append(sline)
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CLI tool to extract content using libraries")
-    parser.add_argument("url", help="Content URL")
+    parser.add_argument("-u", "--url", required=False, help="Content URL")
     parser.add_argument(
-        "-l",
-        "--library",
+        "-e",
+        "--extractor",
         required=False,
-        choices=["newspaper3k", "trafilatura", "jina.ai"],
-        default="jina.ai",
+        choices=["preferred", "newspaper4k", "trafilatura", "jina.ai"],
+        default="preferred",
     )
     parser.add_argument(
+        "--retrievers",
+        default=[],
+        required=False,
+        action="append",
+        choices=["requests", "jina_api", "playwright"],
+        help="What retrievers to use to get raw HTML content"
+    )
+
+    parser.add_argument(
         "-r",
-        "--profile",
+        "--jina-profile",
         default="jina.ai",
         required=False,
-        help="Profile to use for Jina.ai (default jina.ai API, ollama/openai are alternatives)",
+        choices=["jina.ai", "openai"],
+        help="Profile to load from env for Jina.ai, default: jina.ai",
     )
     parser.add_argument("-j", "--json", default=False,
                         action="store_true", help="JSON output")
     parser.add_argument(
-        "--retriever",
-        default="requests",
-        help="What retriever to use to get raw HTML content: requests/jina_api"
+        "--config-path",
+        default=None,
+        help="llm config file path"
+    )
+    parser.add_argument(
+        "--bulk-url-path",
+        default=None,
+        help="URLs to extract, one per line"
+    )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="http proxy for debugging"
     )
 
     args = parser.parse_args()
     load_dotenv(os.path.expanduser(ENV_PATH))
-    extractor = WebExtractor(args.library, args.profile)
-    _, content = extractor.extract(args.url, json=args.json)
+    llm_clients = get_llm_clients(args.config_path)
+    extractor = WebExtractor(
+        args.extractor,
+        retrievers=args.retrievers,
+        jina_profile=args.jina_profile,
+        llm_clients=llm_clients
+    )
+    if args.bulk_url_path:
+        content_generator = extractor.bulk_retrieve(
+            load_urls(args.bulk_url_path),
+            retrievers=args.retrievers
+        )
+        for r in list(content_generator):
+            if r["status"] != "success":
+                print(r["error"] + " - " + r["url"])
+        breakpoint()
+    else:
+        _, content = extractor.extract(args.url, json=args.json)
+
     print(content)
 
 

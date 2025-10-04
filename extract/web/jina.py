@@ -7,14 +7,16 @@
 
 import argparse
 import base64
+import itertools
 import json as js
 import os
 import re
 import sys
-from typing import Dict, Optional, Any
+import time
+import threading
+from typing import Dict, Optional, Any, List
 
 import requests
-import ollama
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 
@@ -51,8 +53,29 @@ class JinaAI:
     # (REPLACE <svg> to </svg> and variations)
     SVG_PATTERN = r"(<svg[^>]*>)(.*?)(<\/svg>)"
 
-    def __init__(self, loglevel: int = 20):
+    def __init__(
+            self,
+            profile: Dict[str, str],
+            loglevel: int = 20,
+            llm_clients: List[ChatOpenAI] = [],
+            proxies: Dict[str, str] = None
+    ):
+        """
+        - profile: Used if llm_clients are NOT set
+        """
         self.logger = set_up_logging(loglevel)
+        self._profile_client = None
+        self.proxies = proxies
+
+        # thread-based round-robin load balancer for multiple OpenAI endpoints
+        self.llm_clients = [{"id": i, "client": client}
+                            for i, client in enumerate(llm_clients)]
+        self.client_cycle = itertools.cycle(self.llm_clients)
+        self.lock = threading.Lock()  # not sure if itertools.cycle is thread-safe
+
+    def get_next_client(self) -> Dict[str, Any]:
+        with self.lock:
+            return next(self.client_cycle)
 
     def get_html_content(
             self,
@@ -77,7 +100,7 @@ class JinaAI:
             return response.text
         except requests.exceptions.RequestException as e:
             error = f"Error during HTML retrieveal: {str(e)}"
-            self.logger.error(error)
+            self.logger.error(error + f", {url}")
             raise RetrievalError(error)
 
     def _create_prompt(
@@ -170,39 +193,91 @@ class JinaAI:
             f"{username}:{password}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
 
-    def _get_ollama_client(username: str, password: str, host: str):
-        print("Deprecated: use ChatOllama from langchain_ollama package instead!")
-
-        headers = {"Authorization": JinaAI._basic_auth(
-            username, password)} if username and password else None
-
-        if host:
-            return ollama.Client(host=host, headers=headers)
-
     @staticmethod
-    def _get_openai_client(url: str, token: str, max_retries: int = 5, proxy: str = None):
+    def _get_openai_client_from_profile(
+            profile: Dict[str, str], proxies: Optional[Dict[str, str]] = None):
+
+        if self._profile_client:
+            return self._profile_client
+
+        base_url = profile["base_url"]
+        token = profile["api_key"]
+        model = profile.get("model")
+        timeout = profile.get("timeout", 60)
+        proxy = proxies["http"] if proxies else None
+
+        assert token is not None, f"API token missing from profile: {profile["type"]}"
+        assert base_url is not None, f"Base URL missing from profile: {profile["type"]}"
+        assert model is not None, f"Model name is missing from profile: {profile["type"]}"
+
         http_client = None
         if proxy:
             transport = httpx.HTTPTransport(
                 proxy=httpx.Proxy(url=proxy), verify=False)
             http_client = httpx.Client(transport=transport)
-        return ChatOpenAI(
+
+        self._profile_client = ChatOpenAI(
             api_key=token,
             base_url=url,
-            max_retries=max_retries,
+            model=model,
+            timeout=timeout,
             http_client=http_client
         )
+
+        return self._profile_client
+
+    def get_markdown_content_batched(
+        self,
+        html_contents: List[str],
+        json: bool = False,
+        schema: Dict[str, Any] = None,
+        max_workers: int = 16  # total workers for all clients
+    ):
+        if len(self.llm_clients) == 0:
+            raise ValueError("Batching needs predefined llm_clients")
+
+        start_time = time.time()
+        results = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_id = {
+                executor.submit(
+                    self.get_markdown_content,
+                    html_content,
+                    {"type": "openai"},
+                    json=json,
+                    schema=schema,
+                    proxies=self.proxies
+                ): i for i, content in enumerate(html_contents)
+            }
+
+            for future in as_completed(future_to_id):
+                request_id = future_to_id[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    results.append({
+                        "request_id": request_id,
+                        "error": str(e),
+                        "status": "error"
+                    })
+
+        results.sort(key=lambda x: x["request_id"])
+
+        end_time = time.time()
+        elapsed = end_time - start_time
+
+        self.logger.info(f"Batch finished in {elapsed}")
+
+        return results
 
     def get_markdown_content(
         self,
         html_content: str,
-        profile: Dict[str, str],
-        llm_client: ChatOpenAI = None,
         url: Optional[str] = None,  # for jina.ai
         json: bool = False,
         schema: Dict[str, Any] = None,
-        retriever: str = "requests",
-        proxies: Optional[Dict[str, str]] = None
     ):
         extract_schema = (
             {
@@ -219,96 +294,84 @@ class JinaAI:
             else schema
         )
 
-        if profile["type"] == "ollama":
-            clean_html = clean_html(
-                html_content, clean_svg=True, clean_base64=True)
-            schema = js.dumps(extract_schema, indent=2) if json else None
-
-            self.logger.info(
-                f"Extracting from cleaned HTML of size: {len(clean_html)}")
-            prompt = self._create_prompt(clean_html, schema=schema)
-
-            username = profile["username"]
-            password = profile["password"]
-            ollama_host = profile["url"]
-            model = profile["model"]
-
-            assert username is not None, f"Username missing from profile: {profile["name"]}"
-            assert password is not None, f"Password missing from profile: {profile["name"]}"
-            assert ollama_url is not None, f"URL missing from profile: {profile["name"]}"
-
-            # TODO: replace with langchain
-            # TODO: proxy
-            client = self._get_ollama_client(username, password, ollama_url)
-
-            try:
-                response = client.chat(
-                    model=model or "ReaderLM-v2-Q8_0",
-                    messages=prompt,
-                    stream=False,
-                )
-                return response.message.content
-            except Exception as e:
-                self.logger.error("Error: " + str(e))
-                sys.exit(1)
-
-        elif profile["type"] == "jina.ai":
+        if self.profile["type"] == "jina.ai":
             assert url is not None, "Missing URL for jina.ai extractor"
-            assert profile["token"] is not None, "Missing jina.ai token"
+            assert self.profile["token"] is not None, "Missing jina.ai token"
 
-            headers = {"Authorization": "Bearer " + profile["token"]}
+            headers = {"Authorization": "Bearer " + self.profile["token"]}
             if json:
                 headers["Accept"] = "application/json"
+
+            if schema:
+                self.logger.warning("jina.ai API only uses it's own schema")
+
+            self.logger.info("Requesting jina.ai API for markdown content...")
 
             response = requests.get(
                 "https://r.jina.ai/" + url,
                 headers=headers,
-                proxies=proxies,
-                timeout=10
+                timeout=10,
+                proxies=self.proxies
             )
 
+            response.raise_for_status()
             return response.text
 
-        elif profile["type"] == "openai":
-            token = profile["api_key"]
-            base_url = profile["base_url"]
-            model = profile.get("model")
-            max_retries = profile.get("max_retries", 5)
-            timeout = profile.get("timeout", 60)
-            proxy = proxies["https"],
-
-            assert token is not None, f"API token missing from profile: {profile["name"]}"
-            assert base_url is not None, f"Base URL missing from profile: {profile["name"]}"
+        elif self.profile["type"] == "openai":
 
             clean_html = clean_html(
-                html_content, clean_svg=True, clean_base64=True)
+                html_content,
+                clean_svg=True,
+                clean_base64=True
+            )
+
             self.logger.info(
                 f"Extracting from cleaned HTML of size: {len(clean_html)}")
 
             schema = js.dumps(extract_schema, indent=2) if json else None
             prompt = self._create_prompt(clean_html, schema=schema)
 
-            if llm_client is None:
-                llm_client = self._get_openai_client(
-                    base_url,
-                    token,
-                    max_retries,
-                    proxy=proxy
-                )
+            client = None
+            for attempt in range(max_retries):
 
-            try:
-                template = ChatPromptTemplate.from_messages(prompt)
-                chain = template | llm_client
-                response = chain.invoke({})
-                return html, response.content
-            except Exception as e:
-                self.logger.error("Error: " + str(e))
-                sys.exit(1)
+                if len(self.llm_clients) == 0:
+                    client = self._get_openai_client_from_profile(
+                        self.profile,
+                        proxies=self.proxies
+                    )
+                else:
+                    client = self.get_next_client()
+
+                try:
+                    template = ChatPromptTemplate.from_messages(prompt)
+                    chain = template | client
+                    response = chain.invoke({})
+                    return {
+                        "request_id": request_id,
+                        "client": client.base_url,
+                        "response": response.content,
+                        "status": "success",
+                        "attempt": attempt + 1
+                    }
+                except Exception as e:
+                    self.logger.error(
+                        f"Error on llm client {client.base_url}: " + str(e))
+
+                    if attempt < max_retries - 1:
+                        time_sleep(1)
+                    continue
+
+            return {
+                "request_id": request_id,
+                "error": f"Failed after {max_retries} attempts",
+                "status": "error"
+            }
 
         else:
-            raise ValueError("Unknown profile type: " + str(profile["type"]))
+            raise ValueError("Unknown profile type: " +
+                             str(self.profile["type"]))
 
-    @staticmethod
+    @ staticmethod
     def strip_markdown(content: str) -> str:
         """Remove ```markdown\n<content>\n``` frame from content"""
         if content.strip().startswith("```markdown"):
@@ -322,31 +385,28 @@ class JinaAI:
 
         return content
 
-    @staticmethod
-    def get_profile(profile_name: str = None) -> Dict:
-        """Load profile from env based on profile_name OR JINA_PROFILE env var"""
-        profile_name = profile_name or os.getenv("JINA_PROFILE", None)
+    @ staticmethod
+    def get_profile_from_env(profile_type: str = None) -> Dict:
+        """Load profile from env based on profile_type OR JINA_PROFILE env var"""
+        profile_type = profile_type or os.getenv("JINA_PROFILE", None)
 
-        if profile_name is None:
+        if profile_type is None:
             raise ValueError(
                 "No profile is defined as argument OR JINA_PROFILE env")
 
-        if profile_name == "jina.ai":
-            return {"type": "jina.ai", "token": os.getenv("JINA_TOKEN")}
-        elif profile_name == "openai":
+        if profile_type == "jina.ai":
             return {
-                "name": profile_name,
+                "type": "jina.ai",
+                "token": os.getenv("JINA_TOKEN")
+            }
+
+        elif profile_type == "openai":
+            return {
                 "type": "openai",
                 "base_url": os.getenv("OPENAI_ENDPOINT"),
-                "api_key": os.getenv("OPENAI_TOKEN")
+                "api_key": os.getenv("OPENAI_TOKEN"),
+                "model": os.getenv("OPENAI_MODEL")
             }
-        elif profile_name == "ollama":
-            return {
-                "name": profile_name,
-                "type": "ollama",
-                "username": os.getenv("OLLAMA_USERNAME"),
-                "password": os.getenv("OLLAMA_PASSWORD"),
-                "url": os.getenv("OLLAMA_URL"),
-            }
+
         else:
-            raise ValueError("Unknown profile: " + str(profile_name))
+            raise ValueError("Unknown profile: " + str(profile_type))

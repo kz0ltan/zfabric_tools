@@ -136,7 +136,8 @@ def test_profile_string_loads_via_jina(monkeypatch):
     assert we.profile == dummy
     # Second access should use cached value
     with monkeypatch.context() as m:
-        m.setattr(we.jina, "get_profile", lambda _: pytest.fail("should not be called"))
+        m.setattr(we.jina, "get_profile",
+                  lambda _: pytest.fail("should not be called"))
         assert we.profile == dummy
 
 
@@ -208,7 +209,8 @@ def test_extract_newspaper4k(monkeypatch):
         @property
         def text(self): return dummy_text
 
-    monkeypatch.setitem(sys.modules, "newspaper", MagicMock(Article=DummyArticle))
+    monkeypatch.setitem(sys.modules, "newspaper",
+                        MagicMock(Article=DummyArticle))
 
     html, text = we.extract("http://example.com", extractor="newspaper4k")
     assert html == dummy_html
@@ -221,9 +223,11 @@ def test_extract_trafilatura_markdown(monkeypatch):
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
     dummy_md = "## Title\\nContent"
-    monkeypatch.setitem(sys.modules, "trafilatura", MagicMock(extract=lambda *a, **k: dummy_md))
+    monkeypatch.setitem(sys.modules, "trafilatura",
+                        MagicMock(extract=lambda *a, **k: dummy_md))
 
-    html, md = we.extract("http://example.com", extractor="trafilatura", json=False)
+    html, md = we.extract("http://example.com",
+                          extractor="trafilatura", json=False)
     assert md == dummy_md
 
 
@@ -235,24 +239,28 @@ def test_extract_trafilatura_json(monkeypatch):
     dummy_json = {"title": "Title", "content": "Content"}
     import json as _json
     monkeypatch.setitem(sys.modules, "trafilatura", MagicMock(
-        extract=lambda *a, **k: _json.dumps(dummy_json) if k.get("output_format") == "json" else None
+        extract=lambda *a, **k: _json.dumps(dummy_json) if k.get(
+            "output_format") == "json" else None
     ))
 
-    html, data = we.extract("http://example.com", extractor="trafilatura", json=True)
+    html, data = we.extract("http://example.com",
+                            extractor="trafilatura", json=True)
     assert data == dummy_json
 
 
 def test_extract_jina_ai_json(monkeypatch):
-    we = WebExtractor()
+    we = WebExtractor(profile={"type": "openai"})
     dummy_html = "<html></html>"
     we.retrieve_with_fallback = MagicMock(return_value=dummy_html)
 
     json_str = json.dumps({"summary": "test"})
+    markdown_str = f'```markdown\n{json_str}\n```'
     we.jina = MagicMock()
-    we.jina.get_markdown_content.return_value = json_str
-    we.profile = {"type": "openai"}
+    we.jina.get_markdown_content.return_value = markdown_str
+    we.jina.strip_markdown.return_value = json_str
 
-    html, data = we.extract("http://example.com", extractor="jina.ai", json=True)
+    html, data = we.extract("http://example.com",
+                            extractor="jina.ai", json=True)
     we.jina.get_markdown_content.assert_called_once()
     assert data == {"summary": "test"}
 
@@ -264,7 +272,8 @@ def test_extract_uses_fallback_extractor():
     we.jina.get_markdown_content.return_value = "md"
 
     # Domain not in preferences → fallback_extractor should be used
-    html, content = we.extract("https://unknown.example.com", extractor="preferred")
+    html, content = we.extract(
+        "https://unknown.example.com", extractor="preferred")
     # The trafilatura branch will be exercised; we mock it to return simple text
     we.jina.get_markdown_content.assert_not_called()
 
@@ -290,4 +299,5 @@ def test_proxies_property():
     assert we.proxies is None
 
     we = WebExtractor(proxy="http://proxy:8080")
-    assert we.proxies == {"http": "http://proxy:8080", "https": "http://proxy:8080"}
+    assert we.proxies == {"http": "http://proxy:8080",
+                          "https": "http://proxy:8080"}
