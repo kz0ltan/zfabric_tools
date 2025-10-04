@@ -428,7 +428,7 @@ class WebExtractor:
 
     def bulk_extract(
         self,
-        html_contents: List[Dict[Union[int, str], str]],
+        html_contents: Generator[Dict[Union[int, str], str], None, None],
         json: bool = False,
         schema: Dict[str, Any] = None,
         max_workers: int = 16  # total workers for all clients
