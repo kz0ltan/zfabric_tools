@@ -435,77 +435,164 @@ class WebExtractor:
         jina_batch_size: int = 20,
     ) -> Generator[Tuple[int, str, Any], None, None]:
         """
-        Stream‑based bulk extraction.
+        Fully‑parallel bulk extraction.
 
-        * For each input item we decide which extractor to use.
-        * Non‑Jina extractors are processed immediately via ``self.extract``.
-        * Items that require the ``jina.ai`` extractor are sent to a
-          ``JinaAI.get_markdown_content_batched`` generator, which yields
-          results as soon as a batch is processed.
-        * The generator yields ``(index, url, extracted_content)`` tuples
-          in the order they become available.
+        * Jina‑based URLs are sent in batches of *jina_batch_size* to the
+          JinaAI generator (which itself uses a thread‑pool).
+        * All other extractors run concurrently in a separate
+          ThreadPoolExecutor.
+        * Results are yielded in the original input order.
         """
+        import queue
+
         # ------------------------------------------------------------------
-        # Prime the Jina generator (synchronous)
+        # 1️⃣  Initialise the Jina generator (synchronous, but we will feed it
+        #     whole batches at once)
         # ------------------------------------------------------------------
         jina_gen = self.jina.get_markdown_content_batched(
             json=json,
             schema=schema,
             max_workers=max_workers,
         )
-        # Prime – the first ``next`` yields a dummy value that we ignore
+        # Prime the generator – the first ``send`` must receive an empty list
         next(jina_gen)
 
         # ------------------------------------------------------------------
-        # Iterate over the incoming stream
+        # 2️⃣  Queues and synchronisation primitives
         # ------------------------------------------------------------------
-        for idx, item in enumerate(html_contents):
-            if "url" not in item:
-                self.logger.warning(f"Item {idx} missing 'url' – skipping")
-                continue
+        jina_queue: "queue.Queue[Tuple[int, Dict[str, Any]]]" = queue.Queue()
+        result_lock = threading.Lock()
+        # Stores completed results: idx → (url, content)
+        completed: Dict[int, Tuple[Optional[str], Any]] = {}
+        next_to_yield = 0
 
-            url = item["url"]
-            html = item.get("html_content")
-            preferred = self._get_preferred(url, "extractor")
+        # ------------------------------------------------------------------
+        # 3️⃣  Background thread that batches Jina items and talks to the
+        #     generator
+        # ------------------------------------------------------------------
+        def _jina_worker():
+            batch_items: List[Dict[str, Any]] = []
+            batch_indices: List[int] = []
 
-            if preferred == "jina.ai":
-                # Send a single‑item batch to the Jina generator.
-                # ``send`` expects a list of HTML strings.
+            def _flush_batch():
+                if not batch_items:
+                    return
                 try:
-                    jina_results = jina_gen.send([item])
+                    jina_results = jina_gen.send(batch_items)
                 except StopIteration:
                     raise RuntimeError("Jina generator terminated prematurely")
+                with result_lock:
+                    for idx, res in zip(batch_indices, jina_results):
+                        url = res.get("url", "")
+                        content = res.get("content")
+                        if json and content is not None:
+                            try:
+                                content = js.loads(content)
+                            except Exception as exc:
+                                self.logger.error(
+                                    f"JSON decode error for {url}: {exc}"
+                                )
+                                content = None
+                        completed[idx] = (url, content)
+                batch_items.clear()
+                batch_indices.clear()
 
-                # The result list has exactly one element (the one we sent)
-                result = jina_results[0]
-                content = result.get("content")
-                if json and content is not None:
-                    try:
-                        content = js.loads(content)
-                    except Exception as exc:
-                        self.logger.error(
-                            f"Failed to JSON‑decode Jina response for {url}: {exc}"
-                        )
-                        content = None
-                yield idx, url, content
-            else:
-                # Non‑Jina extractor – process immediately
-                try:
-                    _, content = self.extract(
-                        url,
-                        extractor=preferred,
-                        json=json,
-                        html_content=html,
-                    )
-                except Exception as exc:
-                    self.logger.error(
-                        f"Extraction failed for {url} (idx={idx}): {exc}"
-                    )
-                    content = None
-                yield idx, url, content
+            while True:
+                item = jina_queue.get()
+                if item is None:  # sentinel to stop the thread
+                    _flush_batch()
+                    break
+                idx, payload = item
+                batch_items.append(
+                    {"url": payload["url"], "html_content": payload.get("html_content")}
+                )
+                batch_indices.append(idx)
+                if len(batch_items) >= jina_batch_size:
+                    _flush_batch()
+
+        jina_thread = threading.Thread(target=_jina_worker, daemon=True)
+        jina_thread.start()
 
         # ------------------------------------------------------------------
-        # Clean‑up – close the Jina generator
+        # 4️⃣  ThreadPoolExecutor for non‑Jina extractors
+        # ------------------------------------------------------------------
+        def _run_local(idx_item):
+            idx, itm = idx_item
+            try:
+                _, content = self.extract(
+                    itm["url"],
+                    extractor=self._get_preferred(itm["url"], "extractor"),
+                    json=json,
+                    html_content=itm.get("html_content"),
+                )
+                return idx, itm["url"], content
+            except Exception as exc:
+                self.logger.error(
+                    f"Extraction failed for {itm['url']} (idx={idx}): {exc}"
+                )
+                return idx, itm["url"], None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as local_pool:
+            local_futures: Dict[int, concurrent.futures.Future] = {}
+
+            # ------------------------------------------------------------------
+            # 5️⃣  Stream the incoming items, dispatching work immediately
+            # ------------------------------------------------------------------
+            for idx, item in enumerate(html_contents):
+                if "url" not in item:
+                    self.logger.warning(f"Item {idx} missing 'url' – skipping")
+                    continue
+
+                pref = self._get_preferred(item["url"], "extractor")
+                if pref == "jina.ai":
+                    # Queue for the Jina worker (batching happens there)
+                    jina_queue.put((idx, item))
+                else:
+                    # Submit to the local executor
+                    local_futures[idx] = local_pool.submit(_run_local, (idx, item))
+
+                # ------------------------------------------------------------------
+                # 6️⃣  Yield any results that are ready in order
+                # ------------------------------------------------------------------
+                while True:
+                    with result_lock:
+                        if next_to_yield in completed:
+                            url, content = completed.pop(next_to_yield)
+                            yield next_to_yield, url, content
+                            next_to_yield += 1
+                            continue
+                    if next_to_yield in local_futures and local_futures[next_to_yield].done():
+                        idx_y, url_y, content_y = local_futures.pop(next_to_yield).result()
+                        yield idx_y, url_y, content_y
+                        next_to_yield += 1
+                        continue
+                    break
+
+        # ------------------------------------------------------------------
+        # 7️⃣  Signal the Jina thread to finish and wait for it
+        # ------------------------------------------------------------------
+        jina_queue.put(None)  # sentinel
+        jina_thread.join()
+
+        # ------------------------------------------------------------------
+        # 8️⃣  Drain any remaining results (still respecting order)
+        # ------------------------------------------------------------------
+        while True:
+            with result_lock:
+                if next_to_yield in completed:
+                    url, content = completed.pop(next_to_yield)
+                    yield next_to_yield, url, content
+                    next_to_yield += 1
+                    continue
+            if next_to_yield in local_futures:
+                idx_y, url_y, content_y = local_futures.pop(next_to_yield).result()
+                yield idx_y, url_y, content_y
+                next_to_yield += 1
+                continue
+            break
+
+        # ------------------------------------------------------------------
+        # 9️⃣  Clean‑up the Jina generator
         # ------------------------------------------------------------------
         try:
             jina_gen.close()
