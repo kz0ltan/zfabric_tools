@@ -446,6 +446,7 @@ class WebExtractor:
         """
 
         # Initialise the Jina generator
+        original_items: Dict[int, Dict] = {}
         jina_gen = self.jina.get_markdown_content_batched(
             json=json,
             schema=schema,
@@ -529,6 +530,7 @@ class WebExtractor:
 
             # Stream the incoming items, dispatching work immediately
             for idx, item in enumerate(html_contents):
+                original_items[idx] = item
                 if "url" not in item:
                     self.logger.warning(f"Item {idx} missing 'url' – skipping")
                     continue
@@ -546,14 +548,18 @@ class WebExtractor:
                 while True:
                     with result_lock:
                         if next_to_yield in completed:
-                            url, content = completed.pop(next_to_yield)
-                            yield next_to_yield, url, content
+                            _, content = completed.pop(next_to_yield)
+                            original = original_items[next_to_yield]
+                            original_with_content = {**original, "content": content}
+                            yield original_with_content
                             next_to_yield += 1
                             continue
                     if next_to_yield in local_futures and local_futures[next_to_yield].done():
-                        idx_y, url_y, content_y = local_futures.pop(
+                        idx_y, _, content_y = local_futures.pop(
                             next_to_yield).result()
-                        yield idx_y, url_y, content_y
+                        original = original_items[idx_y]
+                        original_with_content = {**original, "content": content_y}
+                        yield original_with_content
                         next_to_yield += 1
                         continue
                     break
@@ -566,14 +572,18 @@ class WebExtractor:
         while True:
             with result_lock:
                 if next_to_yield in completed:
-                    url, content = completed.pop(next_to_yield)
-                    yield next_to_yield, url, content
+                    _, content = completed.pop(next_to_yield)
+                    original = original_items[next_to_yield]
+                    original_with_content = {**original, "content": content}
+                    yield original_with_content
                     next_to_yield += 1
                     continue
             if next_to_yield in local_futures:
-                idx_y, url_y, content_y = local_futures.pop(
+                idx_y, _, content_y = local_futures.pop(
                     next_to_yield).result()
-                yield idx_y, url_y, content_y
+                original = original_items[idx_y]
+                original_with_content = {**original, "content": content_y}
+                yield original_with_content
                 next_to_yield += 1
                 continue
             break
