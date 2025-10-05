@@ -446,7 +446,7 @@ class WebExtractor:
           in the order they become available.
         """
         # ------------------------------------------------------------------
-        # 1️⃣  Prime the Jina generator (synchronous)
+        # Prime the Jina generator (synchronous)
         # ------------------------------------------------------------------
         jina_gen = self.jina.get_markdown_content_batched(
             json=json,
@@ -457,7 +457,7 @@ class WebExtractor:
         next(jina_gen)
 
         # ------------------------------------------------------------------
-        # 2️⃣  Iterate over the incoming stream
+        # Iterate over the incoming stream
         # ------------------------------------------------------------------
         for idx, item in enumerate(html_contents):
             if "url" not in item:
@@ -472,7 +472,7 @@ class WebExtractor:
                 # Send a single‑item batch to the Jina generator.
                 # ``send`` expects a list of HTML strings.
                 try:
-                    jina_results = jina_gen.send([html])
+                    jina_results = jina_gen.send([item])
                 except StopIteration:
                     raise RuntimeError("Jina generator terminated prematurely")
 
@@ -482,7 +482,7 @@ class WebExtractor:
                 if json and content is not None:
                     try:
                         content = js.loads(content)
-                    except Exception as exc:   # pragma: no‑cover
+                    except Exception as exc:
                         self.logger.error(
                             f"Failed to JSON‑decode Jina response for {url}: {exc}"
                         )
@@ -497,7 +497,7 @@ class WebExtractor:
                         json=json,
                         html_content=html,
                     )
-                except Exception as exc:   # pragma: no‑cover
+                except Exception as exc:
                     self.logger.error(
                         f"Extraction failed for {url} (idx={idx}): {exc}"
                     )
@@ -505,9 +505,9 @@ class WebExtractor:
                 yield idx, url, content
 
         # ------------------------------------------------------------------
-        # 3️⃣  Clean‑up – close the Jina generator
+        # Clean‑up – close the Jina generator
         # ------------------------------------------------------------------
         try:
             jina_gen.close()
-        except Exception:   # pragma: no‑cover
+        except Exception:
             pass
