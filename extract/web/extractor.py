@@ -6,6 +6,7 @@ import json as js
 from urllib.parse import urlparse
 from typing import List, Optional, Any, Union, Dict, Generator, Tuple
 from urllib.parse import urlparse
+import queue
 
 import requests
 import concurrent.futures
@@ -432,7 +433,7 @@ class WebExtractor:
         json: bool = False,
         schema: Optional[Dict[str, Any]] = None,
         max_workers: int = 16,
-        jina_batch_size: int = 20,
+        jina_batch_size: int = 4,
     ) -> Generator[Tuple[int, str, Any], None, None]:
         """
         Fully‑parallel bulk extraction.
@@ -443,12 +444,8 @@ class WebExtractor:
           ThreadPoolExecutor.
         * Results are yielded in the original input order.
         """
-        import queue
 
-        # ------------------------------------------------------------------
-        # 1️⃣  Initialise the Jina generator (synchronous, but we will feed it
-        #     whole batches at once)
-        # ------------------------------------------------------------------
+        # Initialise the Jina generator
         jina_gen = self.jina.get_markdown_content_batched(
             json=json,
             schema=schema,
@@ -457,19 +454,15 @@ class WebExtractor:
         # Prime the generator – the first ``send`` must receive an empty list
         next(jina_gen)
 
-        # ------------------------------------------------------------------
-        # 2️⃣  Queues and synchronisation primitives
-        # ------------------------------------------------------------------
-        jina_queue: "queue.Queue[Tuple[int, Dict[str, Any]]]" = queue.Queue()
+        # Queues and synchronisation primitives
+        jina_queue: queue.Queue[Tuple[int, Dict[str, Any]]] = queue.Queue()
         result_lock = threading.Lock()
+
         # Stores completed results: idx → (url, content)
         completed: Dict[int, Tuple[Optional[str], Any]] = {}
         next_to_yield = 0
 
-        # ------------------------------------------------------------------
-        # 3️⃣  Background thread that batches Jina items and talks to the
-        #     generator
-        # ------------------------------------------------------------------
+        # Background thread that batches Jina items and talks to the generator
         def _jina_worker():
             batch_items: List[Dict[str, Any]] = []
             batch_indices: List[int] = []
@@ -504,7 +497,8 @@ class WebExtractor:
                     break
                 idx, payload = item
                 batch_items.append(
-                    {"url": payload["url"], "html_content": payload.get("html_content")}
+                    {"url": payload["url"],
+                        "html_content": payload.get("html_content")}
                 )
                 batch_indices.append(idx)
                 if len(batch_items) >= jina_batch_size:
@@ -513,9 +507,7 @@ class WebExtractor:
         jina_thread = threading.Thread(target=_jina_worker, daemon=True)
         jina_thread.start()
 
-        # ------------------------------------------------------------------
-        # 4️⃣  ThreadPoolExecutor for non‑Jina extractors
-        # ------------------------------------------------------------------
+        # ThreadPoolExecutor for non‑Jina extractors
         def _run_local(idx_item):
             idx, itm = idx_item
             try:
@@ -535,9 +527,7 @@ class WebExtractor:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as local_pool:
             local_futures: Dict[int, concurrent.futures.Future] = {}
 
-            # ------------------------------------------------------------------
-            # 5️⃣  Stream the incoming items, dispatching work immediately
-            # ------------------------------------------------------------------
+            # Stream the incoming items, dispatching work immediately
             for idx, item in enumerate(html_contents):
                 if "url" not in item:
                     self.logger.warning(f"Item {idx} missing 'url' – skipping")
@@ -549,11 +539,10 @@ class WebExtractor:
                     jina_queue.put((idx, item))
                 else:
                     # Submit to the local executor
-                    local_futures[idx] = local_pool.submit(_run_local, (idx, item))
+                    local_futures[idx] = local_pool.submit(
+                        _run_local, (idx, item))
 
-                # ------------------------------------------------------------------
-                # 6️⃣  Yield any results that are ready in order
-                # ------------------------------------------------------------------
+                # Yield any results that are ready in order
                 while True:
                     with result_lock:
                         if next_to_yield in completed:
@@ -562,21 +551,18 @@ class WebExtractor:
                             next_to_yield += 1
                             continue
                     if next_to_yield in local_futures and local_futures[next_to_yield].done():
-                        idx_y, url_y, content_y = local_futures.pop(next_to_yield).result()
+                        idx_y, url_y, content_y = local_futures.pop(
+                            next_to_yield).result()
                         yield idx_y, url_y, content_y
                         next_to_yield += 1
                         continue
                     break
 
-        # ------------------------------------------------------------------
-        # 7️⃣  Signal the Jina thread to finish and wait for it
-        # ------------------------------------------------------------------
+        # Signal the Jina thread to finish and wait for it
         jina_queue.put(None)  # sentinel
         jina_thread.join()
 
-        # ------------------------------------------------------------------
-        # 8️⃣  Drain any remaining results (still respecting order)
-        # ------------------------------------------------------------------
+        # Drain any remaining results (still respecting order)
         while True:
             with result_lock:
                 if next_to_yield in completed:
@@ -585,15 +571,14 @@ class WebExtractor:
                     next_to_yield += 1
                     continue
             if next_to_yield in local_futures:
-                idx_y, url_y, content_y = local_futures.pop(next_to_yield).result()
+                idx_y, url_y, content_y = local_futures.pop(
+                    next_to_yield).result()
                 yield idx_y, url_y, content_y
                 next_to_yield += 1
                 continue
             break
 
-        # ------------------------------------------------------------------
-        # 9️⃣  Clean‑up the Jina generator
-        # ------------------------------------------------------------------
+        # Clean‑up the Jina generator
         try:
             jina_gen.close()
         except Exception:
