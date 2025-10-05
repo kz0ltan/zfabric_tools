@@ -100,9 +100,8 @@ def main():
             retrievers=args.retrievers
         )
         contents = extractor.bulk_extract(content_generator)
-        # for r in list(content_generator):
-        #    if r["status"] != "success":
-        #        print(r["error"] + " - " + r["url"])
+        contents = list(contents)
+        breakpoint()
     else:
         _, content = extractor.extract(args.url, json=args.json)
         print(content)

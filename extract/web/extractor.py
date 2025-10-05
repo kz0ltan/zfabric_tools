@@ -550,7 +550,8 @@ class WebExtractor:
                         if next_to_yield in completed:
                             _, content = completed.pop(next_to_yield)
                             original = original_items[next_to_yield]
-                            original_with_content = {**original, "content": content}
+                            original_with_content = {
+                                **original, "content": content}
                             yield original_with_content
                             next_to_yield += 1
                             continue
@@ -558,7 +559,8 @@ class WebExtractor:
                         idx_y, _, content_y = local_futures.pop(
                             next_to_yield).result()
                         original = original_items[idx_y]
-                        original_with_content = {**original, "content": content_y}
+                        original_with_content = {
+                            **original, "content": content_y}
                         yield original_with_content
                         next_to_yield += 1
                         continue

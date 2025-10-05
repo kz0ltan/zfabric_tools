@@ -8,13 +8,14 @@
 import argparse
 import base64
 import itertools
+import httpx
 import json as js
 import os
 import re
 import sys
 import time
 import threading
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -222,13 +223,27 @@ class JinaAI:
 
         self._profile_client = ChatOpenAI(
             api_key=token,
-            base_url=url,
+            base_url=base_url,
             model=model,
             timeout=timeout,
             http_client=http_client
         )
 
         return self._profile_client
+
+    def warm_up_clients(self) -> None:
+        """
+        Simple calls to get_markdown_content_() to warm up 
+        the openai inference endpoints using dummy data
+        """
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for i in range(len(self.llm_clients)):
+                executor.submit(
+                    self.get_markdown_content,
+                    url=f"warmup://{i}",
+                    html_content="<p>warm‑up</p>",
+                    force_openai=True
+                )
 
     def get_markdown_content_batched(
         self,
@@ -256,25 +271,26 @@ class JinaAI:
         if len(self.llm_clients) == 0:
             raise ValueError("Batching needs predefined llm_clients")
 
-        # Create a long‑lived executor that will be reused for every batch
         executor = ThreadPoolExecutor(max_workers=max_workers)
+
+        self.warm_up_clients()
 
         # Prime the generator – the first ``send`` will deliver the first batch
         batch: List[str] = yield []  # caller must call ``next(gen)`` first
 
         while True:
-            if batch is None:                     # caller wants to stop
+            if batch is None:  # if caller wants to stop
                 break
 
             # Submit the current batch to the executor
             future_to_id = {
                 executor.submit(
                     self.get_markdown_content,
-                    html,
-                    {"type": "openai"},
+                    html["html_content"],
+                    url=html["url"],
                     json=json,
                     schema=schema,
-                    proxies=self.proxies,
+                    force_openai=True
                 ): idx
                 for idx, html in enumerate(batch)
             }
@@ -304,7 +320,8 @@ class JinaAI:
         url: Optional[str] = None,  # for jina.ai
         json: bool = False,
         schema: Dict[str, Any] = None,
-        max_retries=3
+        max_retries: int = 3,
+        force_openai: bool = False
     ):
         extract_schema = (
             {
@@ -321,7 +338,7 @@ class JinaAI:
             else schema
         )
 
-        if self.profile["type"] == "jina.ai":
+        if not force_openai and self.profile["type"] == "jina.ai":
             assert url is not None, "Missing URL for jina.ai extractor"
             assert self.profile["token"] is not None, "Missing jina.ai token"
 
@@ -345,11 +362,10 @@ class JinaAI:
             return {
                 "type": "jina.ai",
                 "content": response.text,
-                "status": "success",
-                "attempt": attempt + 1
+                "status": "success"
             }
 
-        elif self.profile["type"] == "openai":
+        elif force_openai or self.profile["type"] == "openai":
 
             clean_html = self.clean_html(
                 html_content,
@@ -390,7 +406,7 @@ class JinaAI:
                         f"Error on llm client {client["client"].openai_api_base}: " + str(e))
 
                     if attempt < max_retries - 1:
-                        time_sleep(1)
+                        time.sleep(1)
                     continue
 
             return {
