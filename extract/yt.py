@@ -3,6 +3,7 @@
 import argparse
 import isodate
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from youtube_transcript_api import YouTubeTranscriptApi
 from dotenv import load_dotenv
+
+logging.getLogger("googleapicliet.discovery_cache").setLevel(logging.ERROR)
 
 ENV_PATH = "~/.config/zfabric/.env"
 
