@@ -5,19 +5,18 @@
 
 # https://github.com/BerriAI/litellm/issues/12070
 
-import argparse
 import base64
 import itertools
 import httpx
 import json as js
 import os
 import re
-import sys
 import time
 import threading
 from typing import Dict, Optional, Any, List, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from bs4 import BeautifulSoup
 import requests
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
@@ -27,7 +26,6 @@ from .common import set_up_logging
 
 
 class JinaAI:
-
     # (REMOVE <SCRIPT> to </script> and variations)
     # mach any char zero or more times
     SCRIPT_PATTERN = r"<[ ]*script.*?\/[ ]*script[ ]*>"
@@ -56,11 +54,11 @@ class JinaAI:
     SVG_PATTERN = r"(<svg[^>]*>)(.*?)(<\/svg>)"
 
     def __init__(
-            self,
-            profile: Dict[str, str],
-            loglevel: int = 20,
-            llm_clients: List[ChatOpenAI] = [],
-            proxies: Dict[str, str] = None
+        self,
+        profile: Dict[str, str],
+        loglevel: int = 20,
+        llm_clients: List[ChatOpenAI] = [],
+        proxies: Dict[str, str] = None,
     ):
         """
         - profile: Used if llm_clients are NOT set
@@ -71,8 +69,7 @@ class JinaAI:
         self.proxies = proxies
 
         # thread-based round-robin load balancer for multiple OpenAI endpoints
-        self.llm_clients = [{"id": i, "client": client}
-                            for i, client in enumerate(llm_clients)]
+        self.llm_clients = llm_clients
         self.client_cycle = itertools.cycle(self.llm_clients)
         self.lock = threading.Lock()  # not sure if itertools.cycle is thread-safe
 
@@ -80,44 +77,53 @@ class JinaAI:
         with self.lock:
             return next(self.client_cycle)
 
-    def get_html_content(
-            self,
-            url: str,
-            proxies: Optional[Dict[str, str]] = None
-    ):
+    def get_html_content(self, url: str, proxies: Optional[Dict[str, str]] = None):
         try:
             self.logger.info(
                 f"Using Jina Reader to fetch **raw HTML** from: {url}")
-            headers = {"X-Return-Format": "html"}
+            headers = {"X-Return-Format": "html", "Accept": "application/json"}
+
             response = requests.get(
                 f"https://r.jina.ai/{url}",
                 proxies=proxies,
                 verify=False if proxies else True,
                 headers=headers,
-                timeout=10
+                timeout=10,
             )
 
             response.raise_for_status()
-            self.logger.info(
-                f"Retrieved raw HTML content: {len(response.text)}")
-            return response.text
+            if response.ok:
+                json_body = js.loads(response.text)
+                data = json_body["data"]
+                html = data.get("html")
+                warning = data.get("warning")
+                if warning:
+                    self.logger.warning(warning + f", {url}")
+                    raise RetrievalError(warning)
+                else:
+                    self.logger.info(
+                        f"Retrieved raw HTML content: {len(html)}")
+                    return html
+            else:
+                raise RetrievalError(
+                    f"{response.status_code}: {response.text}")
+
         except requests.exceptions.RequestException as e:
             error = f"Error during HTML retrieveal: {str(e)}"
             self.logger.error(error + f", {url}")
             raise RetrievalError(error)
 
     def _create_prompt(
-            self,
-            text: str,
-            instruction: str = None,
-            schema: str = None,
-            lc_template: bool = False
+        self, instruction: str = None, schema: str = None, lc_template: bool = False
     ) -> str:
         """
         Create a prompt for the model with optional instruction and JSON schema.
 
+        WARNING: if the output is going to be resolved with langchain, avoid
+            adding text to it, otherwise resolving the input againt might
+            cause issues!
+
         Args:
-            text (str): The input HTML text
             instruction (str, optional): Custom instruction for the model
             schema (str, optional): JSON schema for structured extraction
 
@@ -133,10 +139,12 @@ class JinaAI:
             instruction = "Extract the specified information from the input content and present it in a structured JSON format."
 
             prompt = (
-                f"{instruction}\n```html\n{text}\n```\nThe JSON schema is as follows:```json{schema}```"
+                instruction
+                + "\n```html\n{clean_html}\n```"
+                + f"\n\nThe JSON schema is as follows:```json\n{schema}```"
             )
         else:
-            prompt = f"{instruction}\n```html\n{text}\n```"
+            prompt = instruction + "\n```html\n{clean_html}\n```"
 
         if lc_template:
             return [("user", prompt)]
@@ -170,23 +178,47 @@ class JinaAI:
     def _has_svg_components(text: str) -> bool:
         return bool(re.search(JinaAI.SVG_PATTERN, text, flags=re.DOTALL))
 
-    def clean_html(self, html: str, clean_svg: bool = False, clean_base64: bool = False):
-        html = re.sub(JinaAI.SCRIPT_PATTERN, "", html, flags=(
-            re.IGNORECASE | re.MULTILINE | re.DOTALL))
-        html = re.sub(JinaAI.STYLE_PATTERN, "", html, flags=(
-            re.IGNORECASE | re.MULTILINE | re.DOTALL))
-        html = re.sub(JinaAI.META_PATTERN, "", html, flags=(
-            re.IGNORECASE | re.MULTILINE | re.DOTALL))
-        html = re.sub(JinaAI.COMMENT_PATTERN, "", html, flags=(
-            re.IGNORECASE | re.MULTILINE | re.DOTALL))
-        html = re.sub(JinaAI.LINK_PATTERN, "", html, flags=(
-            re.IGNORECASE | re.MULTILINE | re.DOTALL))
+    @staticmethod
+    def _apply_selector(html: str, selectors: [str]) -> str:
+        if not selectors:
+            return html
+        soup = BeautifulSoup(html, "html.parser")
+        elements = []
+        for selector in selectors:
+            elements.extend(soup.select(selector))
+        return "".join([str(elem) for elem in elements])
+
+    def clean_html(
+        self,
+        html: str,
+        clean_svg: bool = False,
+        clean_base64: bool = False,
+        custom_css_selectors: List[str] = None,
+    ):
+        html = re.sub(
+            JinaAI.SCRIPT_PATTERN, "", html, flags=(re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        )
+        html = re.sub(
+            JinaAI.STYLE_PATTERN, "", html, flags=(re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        )
+        html = re.sub(
+            JinaAI.META_PATTERN, "", html, flags=(re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        )
+        html = re.sub(
+            JinaAI.COMMENT_PATTERN, "", html, flags=(re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        )
+        html = re.sub(
+            JinaAI.LINK_PATTERN, "", html, flags=(re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        )
 
         if clean_svg:
             html = self._replace_svg(html)
 
         if clean_base64:
             html = self._replace_base64_images(html)
+
+        if custom_css_selectors:
+            html = self._apply_selector(html, custom_css_selectors)
 
         return html
 
@@ -197,11 +229,8 @@ class JinaAI:
         return f"Basic {token}"
 
     def _get_openai_client_from_profile(
-            self,
-            profile: Dict[str, str],
-            proxies: Optional[Dict[str, str]] = None
+        self, profile: Dict[str, str], proxies: Optional[Dict[str, str]] = None
     ) -> ChatOpenAI:
-
         if self._profile_client:
             return self._profile_client
 
@@ -211,9 +240,9 @@ class JinaAI:
         timeout = profile.get("timeout", 60)
         proxy = proxies["http"] if proxies else None
 
-        assert token is not None, f"API token missing from profile: {profile["type"]}"
-        assert base_url is not None, f"Base URL missing from profile: {profile["type"]}"
-        assert model is not None, f"Model name is missing from profile: {profile["type"]}"
+        assert token is not None, f"API token missing from profile: {profile['type']}"
+        assert base_url is not None, f"Base URL missing from profile: {profile['type']}"
+        assert model is not None, f"Model name is missing from profile: {profile['type']}"
 
         http_client = None
         if proxy:
@@ -222,35 +251,31 @@ class JinaAI:
             http_client = httpx.Client(transport=transport)
 
         self._profile_client = ChatOpenAI(
-            api_key=token,
-            base_url=base_url,
-            model=model,
-            timeout=timeout,
-            http_client=http_client
+            api_key=token, base_url=base_url, model=model, timeout=timeout, http_client=http_client
         )
 
         return self._profile_client
 
     def warm_up_clients(self) -> None:
         """
-        Simple calls to get_markdown_content_() to warm up 
+        Simple calls to get_markdown_content() to warm up
         the openai inference endpoints using dummy data
         """
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for i in range(len(self.llm_clients)):
-                executor.submit(
-                    self.get_markdown_content,
-                    url=f"warmup://{i}",
-                    html_content="<p>warm‑up</p>",
-                    force_openai=True
-                )
+        tp = ThreadPoolExecutor(max_workers=len(self.llm_clients))
+        for i in range(len(self.llm_clients)):
+            tp.submit(
+                self.get_markdown_content,
+                url=f"warmup://{i}",
+                html_content="<p>warm‑up</p>",
+                force_openai=True,
+            )
 
     def get_markdown_content_batched(
         self,
         *,
         json: bool = False,
         schema: Optional[Dict] = None,
-        max_workers: int = 16,
+        max_workers: int = 8,
     ) -> Generator[List[Dict[str, Any]], List[str], None]:
         """
         Synchronous generator that yields a list of Jina responses for each
@@ -273,7 +298,7 @@ class JinaAI:
 
         executor = ThreadPoolExecutor(max_workers=max_workers)
 
-        self.warm_up_clients()
+        # self.warm_up_clients()
 
         # Prime the generator – the first ``send`` will deliver the first batch
         batch: List[str] = yield []  # caller must call ``next(gen)`` first
@@ -290,7 +315,8 @@ class JinaAI:
                     url=html["url"],
                     json=json,
                     schema=schema,
-                    force_openai=True
+                    custom_css_selectors=html["custom_css_selectors"],
+                    force_openai=True,
                 ): idx
                 for idx, html in enumerate(batch)
             }
@@ -319,9 +345,10 @@ class JinaAI:
         html_content: str,
         url: Optional[str] = None,  # for jina.ai
         json: bool = False,
+        custom_css_selectors: List[str] = None,
         schema: Dict[str, Any] = None,
-        max_retries: int = 3,
-        force_openai: bool = False
+        max_retries: int = 2,  # max_retries on the LLM client multiplies this!
+        force_openai: bool = False,
     ):
         extract_schema = (
             {
@@ -342,7 +369,10 @@ class JinaAI:
             assert url is not None, "Missing URL for jina.ai extractor"
             assert self.profile["token"] is not None, "Missing jina.ai token"
 
-            headers = {"Authorization": "Bearer " + self.profile["token"]}
+            headers = {
+                "Authorization": "Bearer " + self.profile["token"],
+                "Accept": "application/json",
+            }
             if json:
                 headers["Accept"] = "application/json"
 
@@ -352,58 +382,73 @@ class JinaAI:
             self.logger.info("Requesting jina.ai API for markdown content...")
 
             response = requests.get(
-                "https://r.jina.ai/" + url,
-                headers=headers,
-                timeout=10,
-                proxies=self.proxies
+                "https://r.jina.ai/" + url, headers=headers, timeout=10, proxies=self.proxies
             )
 
             response.raise_for_status()
-            return {
-                "type": "jina.ai",
-                "content": response.text,
-                "status": "success"
-            }
+            if response.ok:
+                json_body = js.loads(response.text)
+                data = json_body["data"]
+                content = data.get("content")
+                warning = data.get("warning")
+                if warning:
+                    self.logger.warning(warning + f", {url}")
+                    raise RetrievalError(warning)
+                else:
+                    return {"type": "jina.ai", "content": content, "status": "success"}
+            else:
+                return {"type": "jina.ai", "status": "error", "error": response.text}
 
         elif force_openai or self.profile["type"] == "openai":
-
             clean_html = self.clean_html(
                 html_content,
                 clean_svg=True,
-                clean_base64=True
+                clean_base64=True,
+                custom_css_selectors=custom_css_selectors,
             )
 
             self.logger.info(
                 f"Extracting from cleaned HTML of size: {len(clean_html)}")
 
             schema = js.dumps(extract_schema, indent=2) if json else None
-            prompt = self._create_prompt(clean_html, schema=schema)
+            prompt = self._create_prompt(schema=schema, lc_template=True)
 
+            errors = []
             client = None
             for attempt in range(max_retries):
-
                 if len(self.llm_clients) == 0:
                     client = self._get_openai_client_from_profile(
-                        self.profile,
-                        proxies=self.proxies
+                        self.profile, proxies=self.proxies
                     )
                 else:
                     client = self.get_next_client()
 
                 try:
                     template = ChatPromptTemplate.from_messages(prompt)
-                    chain = template | client["client"]
-                    response = chain.invoke({})
+                    chain = template | client
+                    response = chain.invoke({"clean_html": clean_html})
                     return {
                         "type": "openai",
-                        "client": client["client"].openai_api_base,
+                        "client": client.openai_api_base,
                         "content": response.content,
                         "status": "success",
-                        "attempt": attempt + 1
+                        "attempt": attempt + 1,
+                        "prev_errors": errors,
+                        "usage_metadata": response.usage_metadata,
                     }
                 except Exception as e:
                     self.logger.error(
-                        f"Error on llm client {client["client"].openai_api_base}: " + str(e))
+                        f"Error using llm client {client.openai_api_base}: "
+                        + str(e)
+                        + f" ({str(url)})"
+                    )
+                    errors.append({
+                        "type": "openai",
+                        "client": client.openai_api_base,
+                        "status": "error",
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                    })
 
                     if attempt < max_retries - 1:
                         time.sleep(1)
@@ -412,14 +457,15 @@ class JinaAI:
             return {
                 "type": "openai",
                 "error": f"Failed after {max_retries} attempts",
-                "status": "error"
+                "status": "error",
+                "prev_errors": errors,
             }
 
         else:
             raise ValueError("Unknown profile type: " +
                              str(self.profile["type"]))
 
-    @ staticmethod
+    @staticmethod
     def strip_markdown(content: str) -> str:
         """Remove ```markdown\n<content>\n``` frame from content"""
         if content.strip().startswith("```markdown"):
@@ -433,7 +479,7 @@ class JinaAI:
 
         return content
 
-    @ staticmethod
+    @staticmethod
     def get_profile_from_env(profile_type: str = None) -> Dict:
         """Load profile from env based on profile_type OR JINA_PROFILE env var"""
         profile_type = profile_type or os.getenv("JINA_PROFILE", None)
@@ -443,17 +489,14 @@ class JinaAI:
                 "No profile is defined as argument OR JINA_PROFILE env")
 
         if profile_type == "jina.ai":
-            return {
-                "type": "jina.ai",
-                "token": os.getenv("JINA_TOKEN")
-            }
+            return {"type": "jina.ai", "token": os.getenv("JINA_TOKEN")}
 
         elif profile_type == "openai":
             return {
                 "type": "openai",
                 "base_url": os.getenv("OPENAI_ENDPOINT"),
                 "api_key": os.getenv("OPENAI_TOKEN"),
-                "model": os.getenv("OPENAI_MODEL")
+                "model": os.getenv("OPENAI_MODEL"),
             }
 
         else:
