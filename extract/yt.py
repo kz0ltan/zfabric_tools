@@ -116,22 +116,16 @@ def main_function(url, options, return_only=False):
 
         # Get video transcript
         try:
-            # This fails randomly ...
+            # This failed randomly in the past (not anymore)
             # https://github.com/jdepoix/youtube-transcript-api/issues/429
-            # a retry operation is used below as a workaround
-            # - this does not work anymore... waiting for update
-            # transcript_list = YouTubeTranscriptApi.get_transcript(
-            #    video_id, languages=[options.lang]
-            # )
+            # a retry operation was used below as a workaround
 
             transcript_list = _retry_operation(
-                lambda: YouTubeTranscriptApi.get_transcript(
+                lambda: YouTubeTranscriptApi().fetch(
                     video_id, languages=[options.lang])
             )
 
-            # transcript_list[x]["start"] stores the start time in seconds
-            transcript_text = " ".join([item["text"]
-                                       for item in transcript_list])
+            transcript_text = " ".join([item.text for item in transcript_list])
             transcript_text = transcript_text.replace("\n", " ")
         except Exception as e:
             transcript_text = f"Transcript not available in the selected language ({options.lang}). ({e})\nThis could also mean that a random error occured with the YouTubeTranscriptAPI, try again and see if it works!"
