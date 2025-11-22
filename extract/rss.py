@@ -23,13 +23,19 @@ logger = logging.getLogger(__name__)
 
 
 class RSSSource:
-    def __init__(self, base_url: str, token: str = None):
-        self.base_url = base_url
-        self.token = token or os.getenv("MINIFLUX_TOKEN")
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.base_url = self.config.get("url") or os.getenv("MINIFLUX_URL")
+        self.token = self.config.get("token") or os.getenv("MINIFLUX_TOKEN")
+        self.category_id = self.config.get("category_id")
+        self.ca_bundle_path = self.config.get("requests_ca_bundle")
+
+        if self.ca_bundle_path:
+            os.environ["REQUEST_CA_BUNDLE"] = self.ca_bundle_path
 
     def get_entries(
         self,
-        category_id: str,
+        category_id: str = None,
         since_ts: Optional[float] = None,
         status: Optional[str] = None,
         limit: Optional[int] = 1000,
@@ -40,7 +46,8 @@ class RSSSource:
         https://miniflux.app/docs/api.html#endpoint-get-category-entries
         """
 
-        url = self.base_url + f"/categories/{category_id}/entries"
+        category_id = category_id or self.config.get("category_id")
+        url = self.base_url + f"/categories/{str(category_id)}/entries"
         headers = {"X-Auth-Token": self.token}
         params = {}
         if since_ts:
@@ -86,7 +93,7 @@ class RSSSource:
 
     def get_standard_entries(
         self,
-        category_id: str,
+        category_id: str = None,
         since_ts: Optional[float] = None,
         status: Optional[str] = None,
         limit: Optional[int] = None,
