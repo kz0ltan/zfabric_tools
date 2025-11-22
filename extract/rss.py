@@ -31,7 +31,7 @@ class RSSSource:
         self.ca_bundle_path = self.config.get("requests_ca_bundle")
 
         if self.ca_bundle_path:
-            os.environ["REQUEST_CA_BUNDLE"] = self.ca_bundle_path
+            os.environ["REQUESTS_CA_BUNDLE"] = self.ca_bundle_path
 
     def get_entries(
         self,
