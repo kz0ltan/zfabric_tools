@@ -14,7 +14,12 @@ from collections import defaultdict
 from langchain_openai import ChatOpenAI
 
 from .jina import JinaAI
-from .exceptions import RetrievalError, FailedRetrievalError, HTTPStatusError, ExtractionError
+from .exceptions import (
+    RetrievalError,
+    FailedRetrievalError,
+    HTTPStatusError,
+    ExtractionError,
+)
 from .common import set_up_logging
 
 # https://stackoverflow.com/questions/4672060/web-scraping-how-to-identify-main-content-on-a-webpage
@@ -54,21 +59,22 @@ class WebExtractor:
         "krebsonsecurity.com": {"custom_css_selectors": [".entry-header", "article"]},
     }
 
-    DEFAULT_JINA_PROFILE = {"type": "jina.ai"}
-
     def __init__(
         self,
         extractor: str = "preferred",
         fallback_extractor: str = "jina.ai",
         jina_profile: Optional[Union[str, Dict[str, Any]]] = None,
-        llm_clients: List[ChatOpenAI] = [],
-        retrievers: List[str] = ["preferred"],
+        llm_clients: List[ChatOpenAI] = None,
+        retrievers: List[str] = None,
         fallback_retriever: str = "jina_api",
         proxy: str = None,
         loglevel: int = 20,  # logging.INFO
         default_max_concurrent_requests_per_domain: int = 5,
         default_domain_rate_limit: float = 0.5,
-        user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        user_agent: str = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        ),
     ):
         """Extract text content from web pages
         - extractor: library to use for text extraction from raw HTML
@@ -86,22 +92,27 @@ class WebExtractor:
 
         self.extractor = extractor
         self.fallback_extractor = fallback_extractor
-        self.llm_clients = llm_clients
-        self._saved_jina_profile = jina_profile or self.DEFAULT_JINA_PROFILE
+        self.llm_clients = llm_clients or []
+        self._saved_jina_profile = jina_profile or "jina.ai"
         self._jina_profile = None
-        self.retrievers = retrievers
+        self.retrievers = retrievers or ["preferred"]
         self.fallback_retriever = fallback_retriever
         self.proxy = proxy
         self.logger = set_up_logging(loglevel)
         self.user_agent = user_agent
 
-        self.default_max_concurrent_reqs_per_domain = default_max_concurrent_requests_per_domain
+        self.default_max_concurrent_reqs_per_domain = (
+            default_max_concurrent_requests_per_domain
+        )
         self.default_domain_rate_limit = default_domain_rate_limit
         self._last_request_ts = defaultdict(lambda: 0.0)
         self._ts_lock = threading.Lock()
 
         self.jina = JinaAI(
-            self.jina_profile, loglevel=loglevel, llm_clients=self.llm_clients, proxies=self.proxies
+            self.jina_profile,
+            loglevel=loglevel,
+            llm_clients=self.llm_clients,
+            proxies=self.proxies,
         )
 
     @property
@@ -119,8 +130,7 @@ class WebExtractor:
         if isinstance(self._saved_jina_profile, Dict):
             self._jina_profile = self._saved_jina_profile
         elif isinstance(self._saved_jina_profile, str):
-            self._jina_profile = JinaAI.get_profile_from_env(
-                self._saved_jina_profile)
+            self._jina_profile = JinaAI.get_profile_from_env(self._saved_jina_profile)
         else:
             raise ValueError(
                 f"Type handling not implemented for jina profile: {self._saved_jina_profile}"
@@ -195,7 +205,9 @@ class WebExtractor:
         # Record the timestamp of this request (or the future time after sleep)
         self._last_request_ts[hostname] = now
 
-    def _rate_limited_request(self, req_func: Callable, target_url: str, *args, **kwargs) -> Any:
+    def _rate_limited_request(
+        self, req_func: Callable, target_url: str, *args, **kwargs
+    ) -> Any:
         """
         Perform a req_func respecting time‑based limits
         """
@@ -212,8 +224,7 @@ class WebExtractor:
 
         if retriever == "requests":
             try:
-                self.logger.info(
-                    f"Using requests to fetch **raw HTML** from: {url}")
+                self.logger.info(f"Using requests to fetch **raw HTML** from: {url}")
                 # CloudFlare tends to block this
                 headers = {"User-Agent": self.user_agent}
                 response = self._rate_limited_request(
@@ -227,10 +238,8 @@ class WebExtractor:
                 )
                 response.raise_for_status()
                 if response.status_code == 404:
-                    raise RetrievalError(
-                        f"{response.status_code}: {response.text}")
-                self.logger.info(
-                    f"Retrieved raw HTML content: {len(response.text)}")
+                    raise RetrievalError(f"{response.status_code}: {response.text}")
+                self.logger.info(f"Retrieved raw HTML content: {len(response.text)}")
                 return response.text
             except requests.exceptions.RequestException as e:
                 error = f"Error during HTML retrieveal: {str(e)}"
@@ -240,8 +249,7 @@ class WebExtractor:
             return self.jina.get_html_content(url, self.proxies)
         elif retriever == "playwright":
             try:
-                self.logger.info(
-                    f"Using playwright to fetch **raw HTML** from: {url}")
+                self.logger.info(f"Using playwright to fetch **raw HTML** from: {url}")
                 from playwright.sync_api import sync_playwright
 
                 with sync_playwright() as p:
@@ -257,8 +265,7 @@ class WebExtractor:
                     if not response.ok:
                         raise HTTPStatusError(response)
                     html = page.content()
-                    self.logger.info(
-                        f"Retrieved raw HTML content: {len(html)}")
+                    self.logger.info(f"Retrieved raw HTML content: {len(html)}")
                     browser.close()
                     return html
             except ModuleNotFoundError:
@@ -291,21 +298,28 @@ class WebExtractor:
         results = []
         for retriever in retrievers:
             try:
-                results.append({
-                    "url": url,
-                    "html_content": self.retrieve(url, retriever),
-                    "retrieval": {"status": "success", "retriever": retriever},
-                })
+                results.append(
+                    {
+                        "url": url,
+                        "html_content": self.retrieve(url, retriever),
+                        "retrieval": {"status": "success", "retriever": retriever},
+                    }
+                )
                 return results
             except Exception as e:
-                results.append({
-                    "url": url,
-                    "html_content": None,
-                    "retrieval": {"status": "error", "error": str(e), "retriever": retriever},
-                })
+                results.append(
+                    {
+                        "url": url,
+                        "html_content": None,
+                        "retrieval": {
+                            "status": "error",
+                            "error": str(e),
+                            "retriever": retriever,
+                        },
+                    }
+                )
 
-        raise FailedRetrievalError(
-            "All retrieval methods failed: " + str(results))
+        raise FailedRetrievalError("All retrieval methods failed: " + str(results))
 
     def extract(
         self,
@@ -365,7 +379,10 @@ class WebExtractor:
         elif selected_extractor == "jina.ai":
             custom_css_selectors = self._get_custom_css_selector(url)
             response = self.jina.get_markdown_content(
-                html_content, url=url, json=json, custom_css_selectors=custom_css_selectors
+                html_content,
+                url=url,
+                json=json,
+                custom_css_selectors=custom_css_selectors,
             )
 
             content = response["content"]
@@ -379,8 +396,7 @@ class WebExtractor:
                 return html_content, content
 
         else:
-            raise ValueError(
-                "Unknown extraction library: " + selected_extractor)
+            raise ValueError("Unknown extraction library: " + selected_extractor)
 
     def bulk_retrieve(
         self,
@@ -393,11 +409,12 @@ class WebExtractor:
         Limits the number of concurrent workers per hostname to ``max_workers_per_host``
         to avoid overloading a single target server.
         """
-        max_workers = max_workers_per_host or self.default_max_concurrent_reqs_per_domain
+        max_workers = (
+            max_workers_per_host or self.default_max_concurrent_reqs_per_domain
+        )
 
         # semaphore per hostname to limit concurrent requests
-        self._domain_semaphores = defaultdict(
-            lambda: threading.Semaphore(max_workers))
+        self._domain_semaphores = defaultdict(lambda: threading.Semaphore(max_workers))
 
         def _retrieve_with_limit(url: str, retrievers: List[str]):
             hostname = urlparse(url).hostname
@@ -408,7 +425,9 @@ class WebExtractor:
 
         # Map each URL to its index so we can return results in order of the
         # original list, even though retrieval runs concurrently.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls) * max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(urls) * max_workers
+        ) as executor:
             future_to_index = {
                 executor.submit(_retrieve_with_limit, url, retrievers): idx
                 for idx, url in enumerate(urls)
@@ -424,8 +443,7 @@ class WebExtractor:
                     else:
                         raise Exception("No retrieval results were found")
                 except Exception as e:
-                    self.logger.error(
-                        f"Error retrieving URL at index {idx}: {e}")
+                    self.logger.error(f"Error retrieving URL at index {idx}: {e}")
                     result = {
                         "url": urls[idx],
                         "status": "error",
@@ -503,8 +521,7 @@ class WebExtractor:
                             try:
                                 content = js.loads(content)
                             except Exception as exc:
-                                self.logger.error(
-                                    f"JSON decode error for {url}: {exc}")
+                                self.logger.error(f"JSON decode error for {url}: {exc}")
                                 content = None
                         completed[idx] = (url, content, metadata)
                 batch_items.clear()
@@ -516,11 +533,15 @@ class WebExtractor:
                     _flush_batch()
                     break
                 idx, payload = item
-                batch_items.append({
-                    "url": payload["url"],
-                    "html_content": payload.get("html_content"),
-                    "custom_css_selectors": self._get_custom_css_selector(payload["url"]),
-                })
+                batch_items.append(
+                    {
+                        "url": payload["url"],
+                        "html_content": payload.get("html_content"),
+                        "custom_css_selectors": self._get_custom_css_selector(
+                            payload["url"]
+                        ),
+                    }
+                )
                 batch_indices.append(idx)
                 if len(batch_items) >= jina_batch_size:
                     _flush_batch()
@@ -541,10 +562,13 @@ class WebExtractor:
                 return idx, itm["url"], content
             except Exception as exc:
                 self.logger.error(
-                    f"Extraction failed for {itm['url']} (idx={idx}): {exc}")
+                    f"Extraction failed for {itm['url']} (idx={idx}): {exc}"
+                )
                 return idx, itm["url"], None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as local_pool:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers
+        ) as local_pool:
             local_futures: Dict[int, concurrent.futures.Future] = {}
 
             # Stream the incoming items, dispatching work immediately
@@ -561,8 +585,7 @@ class WebExtractor:
                     jina_queue.put((idx, item))
                 else:
                     # Submit to the local executor
-                    local_futures[idx] = local_pool.submit(
-                        _run_local, (idx, item))
+                    local_futures[idx] = local_pool.submit(_run_local, (idx, item))
 
                 # Yield any results that are ready in order
                 while True:
@@ -579,9 +602,11 @@ class WebExtractor:
                             yield original_with_content
                             next_to_yield += 1
                             continue
-                    if next_to_yield in local_futures and local_futures[next_to_yield].done():
-                        idx_y, _, content_y = local_futures.pop(
-                            next_to_yield).result()
+                    if (
+                        next_to_yield in local_futures
+                        and local_futures[next_to_yield].done()
+                    ):
+                        idx_y, _, content_y = local_futures.pop(next_to_yield).result()
                         original = original_items[idx_y]
                         original_with_content = {
                             **original,
@@ -608,7 +633,10 @@ class WebExtractor:
                     _, content, metadata = completed.pop(next_to_yield)
                     original = original_items[next_to_yield]
                     original_with_content = {
-                        **original, "content": content, "extraction": metadata}
+                        **original,
+                        "content": content,
+                        "extraction": metadata,
+                    }
                     del original_with_content["extractor"]
                     yield original_with_content
                     next_to_yield += 1
