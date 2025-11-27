@@ -240,7 +240,7 @@ class WebExtractor:
             except requests.exceptions.RequestException as e:
                 error = f"Error during HTML retrieveal: {str(e)}"
                 self.logger.error(error + f", {url}")
-                raise RetrievalError(error)
+                raise RetrievalError(error) from e
         elif retriever == "jina_api":
             return self.jina.get_html_content(url, self.proxies)
         elif retriever == "playwright":
@@ -274,19 +274,21 @@ class WebExtractor:
             except Exception as e:
                 error = f"Error during HTML retrieveal: {str(e)}"
                 self.logger.error(error + f", {url}")
-                raise RetrievalError(error)
+                raise RetrievalError(error) from e
         else:
             raise ValueError(f"Unknown retriever {retriever}")
 
     def retrieve_with_fallback(
         self,
         url: str,
-        retrievers: List[str] = ["requests", "jina_api"],
+        retrievers: List[str] = None,
     ) -> List[Dict[str, str]]:
         """
         Retrieve HTML code pointed by url using retrievers sequentially
         until the first successful retrieval
         """
+
+        retrievers = retrievers or ["requests", "jina_api"]
 
         if len(retrievers) == 0:
             retrievers = self.retrievers
@@ -393,7 +395,7 @@ class WebExtractor:
     def bulk_retrieve(
         self,
         urls: List[str],
-        retrievers: List[str] = [],
+        retrievers: List[str] = None,
         max_workers_per_host: Optional[int] = None,
     ) -> Generator[int, None, None]:
         """Threaded retrieval of HTML content from urls
@@ -401,6 +403,7 @@ class WebExtractor:
         Limits the number of concurrent workers per hostname to ``max_workers_per_host``
         to avoid overloading a single target server.
         """
+        retrievers = retrievers or []
         max_workers = max_workers_per_host or self.default_max_concurrent_reqs_per_domain
 
         # semaphore per hostname to limit concurrent requests
@@ -499,9 +502,9 @@ class WebExtractor:
                 try:
                     jina_results = jina_gen.send(batch_items)
                 except StopIteration:
-                    raise RuntimeError("Jina generator terminated prematurely")
+                    raise RuntimeError("Jina generator terminated prematurely") from None
                 with result_lock:
-                    for idx, res in zip(batch_indices, jina_results):
+                    for idx, res in zip(batch_indices, jina_results, strict=True):
                         url = res.get("url", "")
                         content = res.get("content")
                         metadata = _get_metadata(res)
