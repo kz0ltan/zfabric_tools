@@ -73,7 +73,7 @@ class WebExtractor:
         default_domain_rate_limit: float = 0.5,
         user_agent: str = (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
         ),
     ):
         """Extract text content from web pages
@@ -101,9 +101,7 @@ class WebExtractor:
         self.logger = set_up_logging(loglevel)
         self.user_agent = user_agent
 
-        self.default_max_concurrent_reqs_per_domain = (
-            default_max_concurrent_requests_per_domain
-        )
+        self.default_max_concurrent_reqs_per_domain = default_max_concurrent_requests_per_domain
         self.default_domain_rate_limit = default_domain_rate_limit
         self._last_request_ts = defaultdict(lambda: 0.0)
         self._ts_lock = threading.Lock()
@@ -205,9 +203,7 @@ class WebExtractor:
         # Record the timestamp of this request (or the future time after sleep)
         self._last_request_ts[hostname] = now
 
-    def _rate_limited_request(
-        self, req_func: Callable, target_url: str, *args, **kwargs
-    ) -> Any:
+    def _rate_limited_request(self, req_func: Callable, target_url: str, *args, **kwargs) -> Any:
         """
         Perform a req_func respecting time‑based limits
         """
@@ -298,26 +294,22 @@ class WebExtractor:
         results = []
         for retriever in retrievers:
             try:
-                results.append(
-                    {
-                        "url": url,
-                        "html_content": self.retrieve(url, retriever),
-                        "retrieval": {"status": "success", "retriever": retriever},
-                    }
-                )
+                results.append({
+                    "url": url,
+                    "html_content": self.retrieve(url, retriever),
+                    "retrieval": {"status": "success", "retriever": retriever},
+                })
                 return results
             except Exception as e:
-                results.append(
-                    {
-                        "url": url,
-                        "html_content": None,
-                        "retrieval": {
-                            "status": "error",
-                            "error": str(e),
-                            "retriever": retriever,
-                        },
-                    }
-                )
+                results.append({
+                    "url": url,
+                    "html_content": None,
+                    "retrieval": {
+                        "status": "error",
+                        "error": str(e),
+                        "retriever": retriever,
+                    },
+                })
 
         raise FailedRetrievalError("All retrieval methods failed: " + str(results))
 
@@ -409,9 +401,7 @@ class WebExtractor:
         Limits the number of concurrent workers per hostname to ``max_workers_per_host``
         to avoid overloading a single target server.
         """
-        max_workers = (
-            max_workers_per_host or self.default_max_concurrent_reqs_per_domain
-        )
+        max_workers = max_workers_per_host or self.default_max_concurrent_reqs_per_domain
 
         # semaphore per hostname to limit concurrent requests
         self._domain_semaphores = defaultdict(lambda: threading.Semaphore(max_workers))
@@ -425,9 +415,7 @@ class WebExtractor:
 
         # Map each URL to its index so we can return results in order of the
         # original list, even though retrieval runs concurrently.
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(urls) * max_workers
-        ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls) * max_workers) as executor:
             future_to_index = {
                 executor.submit(_retrieve_with_limit, url, retrievers): idx
                 for idx, url in enumerate(urls)
@@ -533,15 +521,11 @@ class WebExtractor:
                     _flush_batch()
                     break
                 idx, payload = item
-                batch_items.append(
-                    {
-                        "url": payload["url"],
-                        "html_content": payload.get("html_content"),
-                        "custom_css_selectors": self._get_custom_css_selector(
-                            payload["url"]
-                        ),
-                    }
-                )
+                batch_items.append({
+                    "url": payload["url"],
+                    "html_content": payload.get("html_content"),
+                    "custom_css_selectors": self._get_custom_css_selector(payload["url"]),
+                })
                 batch_indices.append(idx)
                 if len(batch_items) >= jina_batch_size:
                     _flush_batch()
@@ -561,14 +545,10 @@ class WebExtractor:
                 )
                 return idx, itm["url"], content
             except Exception as exc:
-                self.logger.error(
-                    f"Extraction failed for {itm['url']} (idx={idx}): {exc}"
-                )
+                self.logger.error(f"Extraction failed for {itm['url']} (idx={idx}): {exc}")
                 return idx, itm["url"], None
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers
-        ) as local_pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as local_pool:
             local_futures: Dict[int, concurrent.futures.Future] = {}
 
             # Stream the incoming items, dispatching work immediately
@@ -602,10 +582,7 @@ class WebExtractor:
                             yield original_with_content
                             next_to_yield += 1
                             continue
-                    if (
-                        next_to_yield in local_futures
-                        and local_futures[next_to_yield].done()
-                    ):
+                    if next_to_yield in local_futures and local_futures[next_to_yield].done():
                         idx_y, _, content_y = local_futures.pop(next_to_yield).result()
                         original = original_items[idx_y]
                         original_with_content = {
