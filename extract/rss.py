@@ -51,7 +51,8 @@ class RSSSource:
         headers = {"X-Auth-Token": self.token}
         params = {}
         if since_ts:
-            params["after"] = since_ts
+            # Miniflux typically expects timestamps in seconds!
+            params["after"] = int(since_ts)
         if status:
             params["status"] = status
         if limit:
@@ -96,7 +97,7 @@ class RSSSource:
         category_id: str = None,
         since_ts: Optional[float] = None,
         status: Optional[str] = None,
-        limit: Optional[int] = None,
+        limit: Optional[int] = 1000,
         order: str = "published_at",
         direction: str = "asc",
     ):
@@ -133,40 +134,33 @@ class RSSSource:
         - timeout: Seconds to wait for a response before raising requests.Timeout
         """
 
-        url = self.base_url + f"/categories/{category_id}/entries"
+        url = self.base_url + "/entries"
         headers = {"X-Auth-Token": self.token}
-        # params = {}
-        # if since_ts:
-        #    params["after"] = since_ts
-        # if status:
-        #    params["status"] = status
-        # if limit:
-        #    params["limit"] = limit
-        # if order:
-        #    params["order"] = order
-        # if direction:
-        #    params["direction"] = direction
+        params = {
+            "entry_ids": entry_ids,
+            "status": status,
+        }
 
-        # try:
-        #    response = requests.put(
-        #        url,
-        #        headers=headers,
-        #        json=params,
-        #        timeout=timeout,
-        #    )
-        #    response.raise_for_status()
-        #    return response.json()
-        # except (ConnectionError, Timeout, TooManyRedirects) as exc:
-        #    logger.error("Network problem while contacting %s: %s", url, exc)
-        #    raise
-        # except HTTPError as exc:
-        #    logger.error(
-        #        "HTTP error %s (%s): %s",
-        #        exc.response.status_code,
-        #        exc.response.reason,
-        #        response.text
-        #    )
-        #    raise
-        # except RequestException as exc:
-        #    logger.error("Request failed: %s", exc)
-        #    raise
+        try:
+            response = requests.put(
+                url,
+                headers=headers,
+                json=params,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return True
+        except (ConnectionError, Timeout, TooManyRedirects) as exc:
+            logger.error("Network problem while contacting %s: %s", url, exc)
+            raise
+        except HTTPError as exc:
+            logger.error(
+                "HTTP error %s (%s): %s",
+                exc.response.status_code,
+                exc.response.reason,
+                response.text,
+            )
+            raise
+        except RequestException as exc:
+            logger.error("Request failed: %s", exc)
+            raise
