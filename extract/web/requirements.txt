@@ -5,3 +5,4 @@ ollama
 requests
 langchain-openai
 langchain-core
+lxml[html_clean]
