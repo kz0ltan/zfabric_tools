@@ -95,11 +95,10 @@ def main_function(url, options, return_only=False):
 
     try:
         # Initialize the YouTube API client
-        youtube = build("youtube", "v3", developerKey=api_key)
+        youtube = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
 
         # Get video details
-        video_response = youtube.videos().list(
-            id=video_id, part="contentDetails,snippet").execute()
+        video_response = youtube.videos().list(id=video_id, part="contentDetails,snippet").execute()
 
         # Extract video duration and convert to minutes
         duration_iso = video_response["items"][0]["contentDetails"]["duration"]
@@ -121,8 +120,7 @@ def main_function(url, options, return_only=False):
             # a retry operation was used below as a workaround
 
             transcript_list = _retry_operation(
-                lambda: YouTubeTranscriptApi().fetch(
-                    video_id, languages=[options.lang])
+                lambda: YouTubeTranscriptApi().fetch(video_id, languages=[options.lang])
             )
 
             transcript_text = " ".join([item.text for item in transcript_list])
@@ -156,8 +154,7 @@ def main_function(url, options, return_only=False):
 
         if options.transcript:
             if not options.transcript_as_list:
-                print(output["transcript"].encode(
-                    "utf-8").decode("unicode-escape"))
+                print(output["transcript"].encode("utf-8").decode("unicode-escape"))
             else:
                 print(json.dumps({"items": output["transcript"]}, indent=2))
 
@@ -176,14 +173,10 @@ def main_function(url, options, return_only=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("url", help="YouTube video URL")
-    parser.add_argument("--duration", action="store_true",
-                        help="Output the duration")
-    parser.add_argument("--transcript", action="store_true",
-                        help="Output the transcript")
-    parser.add_argument("--comments", action="store_true",
-                        help="Output the comments")
-    parser.add_argument("--metadata", action="store_true",
-                        help="Output the video metadata")
+    parser.add_argument("--duration", action="store_true", help="Output the duration")
+    parser.add_argument("--transcript", action="store_true", help="Output the transcript")
+    parser.add_argument("--comments", action="store_true", help="Output the comments")
+    parser.add_argument("--metadata", action="store_true", help="Output the video metadata")
     parser.add_argument(
         "--transcript-as-list",
         action="store_true",
