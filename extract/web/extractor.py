@@ -27,6 +27,8 @@ from .common import set_up_logging
 
 
 class WebExtractor:
+    # Custom CSS selectors should be avoided unless local Jina model is used
+
     DOMAIN_SETTINGS = {
         "thehackernews.com": {
             "retriever": "requests",
@@ -55,8 +57,32 @@ class WebExtractor:
             "extractor": "trafilatura",
             "custom_css_selectors": ["#main"],
         },
-        "www.schneier.com": {"custom_css_selectors": [".article"]},
+        "www.schneier.com": {
+            "retriever": "jina_api",
+            "extractor": "trafilatura",
+            "custom_css_selectors": [".article"],
+        },
         "krebsonsecurity.com": {"custom_css_selectors": [".entry-header", "article"]},
+        "www.darktrace.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": [".blog_new-header", ".blog-article_main"],
+        },
+        "securelist.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": ["article.c-article"],
+        },
+        "www.f5.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": [.labs-main-content"]
+        },
+        "darkwebinformer.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            "custom_css_selectors": ["#main>article"],
+        },
     }
 
     def __init__(
@@ -313,7 +339,7 @@ class WebExtractor:
                     },
                 })
 
-        raise FailedRetrievalError("All retrieval methods failed: " + str(results))
+        raise FailedRetrievalError(f"All retrieval methods failed for: {url}", results)
 
     def extract(
         self,
@@ -440,6 +466,7 @@ class WebExtractor:
                         "status": "error",
                         "html_content": None,
                         "error": str(e),
+                        "retrieval": getattr(e, "retrievals", None),
                     }
                 yield idx, result
 
