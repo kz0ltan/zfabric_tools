@@ -79,8 +79,7 @@ class JinaAI:
 
     def get_html_content(self, url: str, proxies: Optional[Dict[str, str]] = None):
         try:
-            self.logger.info(
-                f"Using Jina Reader to fetch **raw HTML** from: {url}")
+            self.logger.info(f"Using Jina Reader to fetch **raw HTML** from: {url}")
             headers = {"X-Return-Format": "html", "Accept": "application/json"}
 
             response = requests.get(
@@ -101,12 +100,10 @@ class JinaAI:
                     self.logger.warning(warning + f", {url}")
                     raise RetrievalError(warning)
                 else:
-                    self.logger.info(
-                        f"Retrieved raw HTML content: {len(html)}")
+                    self.logger.info(f"Retrieved raw HTML content: {len(html)}")
                     return html
             else:
-                raise RetrievalError(
-                    f"{response.status_code}: {response.text}")
+                raise RetrievalError(f"{response.status_code}: {response.text}")
 
         except requests.exceptions.RequestException as e:
             error = f"Error during HTML retrieveal: {str(e)}"
@@ -224,8 +221,7 @@ class JinaAI:
 
     @staticmethod
     def _basic_auth(username: str, password: str):
-        token = base64.b64encode(
-            f"{username}:{password}".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
 
     def _get_openai_client_from_profile(
@@ -246,8 +242,7 @@ class JinaAI:
 
         http_client = None
         if proxy:
-            transport = httpx.HTTPTransport(
-                proxy=httpx.Proxy(url=proxy), verify=False)
+            transport = httpx.HTTPTransport(proxy=httpx.Proxy(url=proxy), verify=False)
             http_client = httpx.Client(transport=transport)
 
         self._profile_client = ChatOpenAI(
@@ -407,8 +402,7 @@ class JinaAI:
                 custom_css_selectors=custom_css_selectors,
             )
 
-            self.logger.info(
-                f"Extracting from cleaned HTML of size: {len(clean_html)}")
+            self.logger.info(f"Extracting from cleaned HTML of size: {len(clean_html)}")
 
             schema = js.dumps(extract_schema, indent=2) if json else None
             prompt = self._create_prompt(schema=schema, lc_template=True)
@@ -462,8 +456,7 @@ class JinaAI:
             }
 
         else:
-            raise ValueError("Unknown profile type: " +
-                             str(self.profile["type"]))
+            raise ValueError("Unknown profile type: " + str(self.profile["type"]))
 
     @staticmethod
     def strip_markdown(content: str) -> str:
@@ -485,8 +478,7 @@ class JinaAI:
         profile_type = profile_type or os.getenv("JINA_PROFILE", None)
 
         if profile_type is None:
-            raise ValueError(
-                "No profile is defined as argument OR JINA_PROFILE env")
+            raise ValueError("No profile is defined as argument OR JINA_PROFILE env")
 
         if profile_type == "jina.ai":
             return {"type": "jina.ai", "token": os.getenv("JINA_TOKEN")}

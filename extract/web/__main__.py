@@ -7,8 +7,8 @@ import time
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from web.extractor import WebExtractor
-from web.jina import JinaAI
+from .extractor import WebExtractor
+from .jina import JinaAI
 
 ENV_PATH = "~/.config/zfabric/.env"
 
