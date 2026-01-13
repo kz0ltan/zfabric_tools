@@ -117,15 +117,104 @@ class Reddit:
 
         return ndata
 
-    def get_all_comments_of_post(self, post_url: str):
+    def get_submission(self, post_url: str, limit=200):
         submission = self.reddit.submission(url=post_url)
-        submission.comments.replace_more(limit=None)  # Load all nested comments
+        submission.comments.replace_more(limit=limit)  # Load nested comments
+        return submission
 
-        comments = []
-        for comment in submission.comments.list():
-            comments.append(comment.body)
+    def print_post(self, submission):
+        print("# " + submission.title + "\n")
+        print(submission.selftext)
+        print("-" * 80)
 
-        return comments
+    def print_comment_tree(self, comment_forest, indent=0, max_len: int = 80):
+        """Recursively prints comments with indentation."""
+        for comment in comment_forest:
+            # `comment` can be a Comment or a MoreComments (should be gone after replace_more)
+            if isinstance(comment, praw.models.Comment):
+                # Clean up newlines & tabs for nicer output
+                body = comment.body.replace("\n", " ").replace("\r", "")
+                print(" " * indent + f"u/{comment.author} [{comment.score}] {body[:max_len]}...")
+                # Recurse into replies (which is another CommentForest)
+                if comment.replies:
+                    self.print_comment_tree(comment.replies, indent + 4)
+            else:
+                # Should not happen after replace_more, but keep for safety
+                print(" " * indent + f"<{type(comment).__name__}>")
+
+    def build_post_dict(self, s):
+        """Collect the fields you care about from a Submission."""
+        post = {
+            "id": s.id,
+            "title": s.title,
+            "subreddit": s.subreddit.display_name,
+            "author": str(s.author) if s.author else "[deleted]",
+            "score": s.score,
+            "upvote_ratio": s.upvote_ratio,
+            "created_utc": s.created_utc,
+            "over_18": s.over_18,
+            "url": s.url,
+            "is_self": s.is_self,
+            "permalink": s.permalink,
+            "selftext": s.selftext if s.is_self else None,
+            "preview_images": None,
+            "media": None,
+        }
+
+        # --- optional media handling -------------------------------------------------
+        # if hasattr(s, "preview") and s.preview:
+        #    # Grab the first preview image (if any)
+        #    images = s.preview.get("images")
+        #    if images:
+        #        post["preview_images"] = [img["source"]["url"] for img in images]
+
+        # if s.media:
+        #    post["media"] = s.media  # raw dict – you can parse further if needed
+
+        # For gallery posts (multiple images) – works on newer Reddit designs
+        # if getattr(s, "is_gallery", False):
+        #    post["gallery"] = {}
+        #    for media_id, meta in s.media_metadata.items():
+        #        # Most common: images
+        #        if meta.get("e") == "Image":
+        #            post["gallery"][media_id] = meta["s"]["u"]  # direct URL
+        # ------------------------------------------------------------------------------
+
+        return post
+
+    def comment_forest_to_dict(self, comment_forest):
+        """
+        Turn a CommentForest into a list of dicts:
+        [
+            {
+                "id": "...",
+                "author": "...",
+                "score": ...,
+                "body": "...",
+                "created_utc": ...,
+                "replies": [ ...same structure... ]
+            },
+            ...
+        ]
+        """
+        result = []
+        for comment in comment_forest:
+            if not isinstance(comment, praw.models.Comment):
+                # Skip any stray MoreComments (should be none after replace_more)
+                continue
+
+            comment_dict = {
+                "id": comment.id,
+                "author": str(comment.author) if comment.author else "[deleted]",
+                "score": comment.score,
+                "body": comment.body,
+                "created_utc": comment.created_utc,
+                "permalink": comment.permalink,
+                "replies": self.comment_forest_to_dict(comment.replies) if comment.replies else [],
+            }
+            result.append(comment_dict)
+
+        return result
 
     def __call__(self):
         return self.get_saved_posts(self.reddit, limit=None)
@@ -189,6 +278,6 @@ if __name__ == "__main__":
             })
         print(json.dumps(filtered_results, indent=2))
     elif args.url:
-        results = r.get_all_comments_of_post(args.url)
-        for i, comment in enumerate(results, 1):
-            print(f"{i}. {comment}\n")
+        submission = r.get_submission(args.url)
+        r.print_post(submission)
+        r.print_comment_tree(submission.comments)
