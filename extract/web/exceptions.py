@@ -3,7 +3,10 @@ class RetrievalError(Exception):
 
 
 class FailedRetrievalError(Exception):
-    pass
+    def __init__(self, msg, retrievals):
+        self.message = msg
+        self.retrievals = retrievals
+        super().__init__(self.message)
 
 
 class ExtractionError(Exception):

@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import sys
 from typing import Optional, List, Dict, Any
 
 import requests
@@ -14,11 +13,6 @@ from requests.exceptions import (
     RequestException,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stderr,
-)
 logger = logging.getLogger(__name__)
 
 

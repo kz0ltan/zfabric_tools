@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 import json as js
+import logging
 from urllib.parse import urlparse
 from typing import List, Optional, Any, Union, Dict, Generator, Tuple
 import queue
@@ -27,6 +28,8 @@ from .common import set_up_logging
 
 
 class WebExtractor:
+    # Custom CSS selectors should be avoided unless local Jina model is used
+
     DOMAIN_SETTINGS = {
         "thehackernews.com": {
             "retriever": "requests",
@@ -55,9 +58,43 @@ class WebExtractor:
             "extractor": "trafilatura",
             "custom_css_selectors": ["#main"],
         },
-        "www.schneier.com": {"custom_css_selectors": [".article"]},
+        "www.schneier.com": {
+            "retriever": "jina_api",
+            "extractor": "trafilatura",
+            "custom_css_selectors": [".article"],
+        },
         "krebsonsecurity.com": {"custom_css_selectors": [".entry-header", "article"]},
+        "www.darktrace.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": [".blog_new-header", ".blog-article_main"],
+        },
+        "securelist.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": ["article.c-article"],
+        },
+        "www.f5.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            # "custom_css_selectors": [.labs-main-content"]
+        },
+        "darkwebinformer.com": {
+            "retriever": "requests",
+            "extractor": "trafilatura",
+            "custom_css_selectors": ["#main>article"],
+        },
     }
+
+    default_additional_headers = {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Ch-Ua": '"Not_A Brand";v="99", "Chromium";v="142"',
+    }
+
+    default_user_agent = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    )
 
     def __init__(
         self,
@@ -71,10 +108,8 @@ class WebExtractor:
         loglevel: int = 20,  # logging.INFO
         default_max_concurrent_requests_per_domain: int = 5,
         default_domain_rate_limit: float = 0.5,
-        user_agent: str = (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-        ),
+        user_agent: str = None,
+        additional_headers: Dict[str, str] = None,
     ):
         """Extract text content from web pages
         - extractor: library to use for text extraction from raw HTML
@@ -98,8 +133,11 @@ class WebExtractor:
         self.retrievers = retrievers or ["preferred"]
         self.fallback_retriever = fallback_retriever
         self.proxy = proxy
-        self.logger = set_up_logging(loglevel)
-        self.user_agent = user_agent
+        # self.logger = set_up_logging(loglevel)
+        self.logger = logging.getLogger(__name__)
+
+        self.user_agent = user_agent or WebExtractor.default_user_agent
+        self.additional_headers = additional_headers or WebExtractor.default_additional_headers
 
         self.default_max_concurrent_reqs_per_domain = default_max_concurrent_requests_per_domain
         self.default_domain_rate_limit = default_domain_rate_limit
@@ -238,7 +276,7 @@ class WebExtractor:
                 self.logger.info(f"Retrieved raw HTML content: {len(response.text)}")
                 return response.text
             except requests.exceptions.RequestException as e:
-                error = f"Error during HTML retrieveal: {str(e)}"
+                error = f"Error during HTML retrieval with requests: {str(e)}"
                 self.logger.error(error + f", {url}")
                 raise RetrievalError(error) from e
         elif retriever == "jina_api":
@@ -254,9 +292,21 @@ class WebExtractor:
                     )
                     context = browser.new_context(
                         user_agent=self.user_agent,
+                        extra_http_headers=self.additional_headers,
                         ignore_https_errors=True if self.proxy else False,
                     )
                     page = context.new_page()
+
+                    # Add header overrides to each request, so sec-ch-ua header
+                    # gets overriden, even on redirects
+                    # Order of headers might matter as well,
+                    # check WebExtractor.additional_headers
+                    def handle_route(route):
+                        headers = {**route.request.headers, **self.additional_headers}
+                        route.continue_(headers=headers)
+
+                    page.route("**/*", handle_route)
+
                     response = self._rate_limited_request(page.goto, url, url)
                     if not response.ok:
                         raise HTTPStatusError(response)
@@ -272,7 +322,7 @@ class WebExtractor:
                 )
                 raise
             except Exception as e:
-                error = f"Error during HTML retrieveal: {str(e)}"
+                error = f"Error during HTML retrieval with playwright: {str(e)}"
                 self.logger.error(error + f", {url}")
                 raise RetrievalError(error) from e
         else:
@@ -313,7 +363,7 @@ class WebExtractor:
                     },
                 })
 
-        raise FailedRetrievalError("All retrieval methods failed: " + str(results))
+        raise FailedRetrievalError(f"All retrieval methods failed for: {url}", results)
 
     def extract(
         self,
@@ -440,6 +490,7 @@ class WebExtractor:
                         "status": "error",
                         "html_content": None,
                         "error": str(e),
+                        "retrieval": getattr(e, "retrievals", None),
                     }
                 yield idx, result
 

@@ -13,8 +13,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+from web.utils import set_up_logging
 
 
 def is_github_repo_url(owner: str, repo: str, token=None):
@@ -449,7 +448,7 @@ def main():
 
     # Set logging level based on verbose flag
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        set_up_logging(logging.DEBUG)
 
     try:
         # Parse GitHub URL
