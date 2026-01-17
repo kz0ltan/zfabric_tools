@@ -3,12 +3,11 @@
 import argparse
 import json
 import os
-from typing import Optional, List, Dict, Iterable
+from typing import Dict, Iterable, List, Optional
 
-from dotenv import load_dotenv
 import requests
+from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
-
 
 ENV_PATH = "~/.config/zfabric/.env"
 
@@ -59,11 +58,7 @@ class ConfluenceClient:
                 for obj in r_json["results"]:
                     if obj[search_field] == search_value:
                         return [obj]
-            if (
-                "_links" in r_json
-                and "next" in r_json["_links"]
-                and page_idx < max_pages
-            ):
+            if "_links" in r_json and "next" in r_json["_links"] and page_idx < max_pages:
                 url = self.instance_url + r_json["_links"]["next"]
             else:
                 print("\n", end="")
@@ -94,9 +89,7 @@ class ConfluenceClient:
         )
         return pages
 
-    def get_page_by_id(
-        self, page_id: int, recursive: bool = False, limit: int = 10
-    ) -> List[Dict]:
+    def get_page_by_id(self, page_id: int, recursive: bool = False, limit: int = 10) -> List[Dict]:
         """Get page contents based on page_id"""
         url = self.instance_url + f"/wiki/api/v2/pages/{page_id}?body-format=view"
         response = self._send_request(url)
@@ -105,9 +98,7 @@ class ConfluenceClient:
         if recursive:
             children = self.get_child_pages_by_id(page_id)
             child_ids = [list(child.keys())[0] for child in children]
-            responses.extend(
-                [self.get_page_by_id(child_id)[0] for child_id in child_ids[:limit]]
-            )
+            responses.extend([self.get_page_by_id(child_id)[0] for child_id in child_ids[:limit]])
         else:
             responses.append(response.json())
 

@@ -1,8 +1,0 @@
-python-dotenv
-trafilatura
-newspaper4k
-ollama
-requests
-langchain-openai
-langchain-core
-lxml[html_clean]
