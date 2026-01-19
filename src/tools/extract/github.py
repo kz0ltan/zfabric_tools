@@ -10,8 +10,8 @@ import logging
 import re
 import sys
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from web.utils import set_up_logging
 

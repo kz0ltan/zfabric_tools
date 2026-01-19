@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: tools
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: google-api-python-client>=2.188.0
+Requires-Dist: isodate>=0.7.2
+Requires-Dist: langchain-core>=1.2.7
+Requires-Dist: langchain-openai>=1.1.7
+Requires-Dist: lxml[html-clean]>=6.0.2
+Requires-Dist: newspaper4k>=0.9.4.1
+Requires-Dist: ollama>=0.6.1
+Requires-Dist: praw>=7.8.1
+Requires-Dist: python-dotenv>=1.2.1
+Requires-Dist: requests>=2.32.5
+Requires-Dist: trafilatura>=2.0.0
+Requires-Dist: youtube-transcript-api>=1.2.3
+
+This is a small collection of tools to extract/save text from/to services.
+
+This is meant to be used by another project.
+
+To run tests, add this to the parent project's pyproject.toml:
+
+```
+[tool.pytest.ini_options]
+pythonpath = ["tools"]
+```
+
+To execute tests (from the parent project's root):
+
+```
+uv run pytest tools/tests/test_web_extractor.py
+```
