@@ -84,6 +84,14 @@ class WebExtractor:
             "extractor": "trafilatura",
             "custom_css_selectors": ["#main>article"],
         },
+        "www.trellix.com": {
+            "retriever": "playwright",
+            "extractor": "trafilatura",
+        },
+        "www.ncsc.govt.nz": {
+            "retriever": "playwright",
+            "extractor": "trafilatura",
+        },
     }
 
     default_additional_headers = {
@@ -273,7 +281,7 @@ class WebExtractor:
                 response.raise_for_status()
                 if response.status_code == 404:
                     raise RetrievalError(f"{response.status_code}: {response.text}")
-                self.logger.info(f"Retrieved raw HTML content: {len(response.text)}")
+                self.logger.info(f"Retrieved raw HTML content {len(response.text)} from {url}")
                 return response.text
             except requests.exceptions.RequestException as e:
                 error = f"Error during HTML retrieval with requests: {str(e)}"
@@ -311,7 +319,7 @@ class WebExtractor:
                     if not response.ok:
                         raise HTTPStatusError(response)
                     html = page.content()
-                    self.logger.info(f"Retrieved raw HTML content: {len(html)}")
+                    self.logger.info(f"Retrieved raw HTML content {len(html)} from {url}")
                     browser.close()
                     return html
             except ModuleNotFoundError:

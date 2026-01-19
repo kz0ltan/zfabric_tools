@@ -489,6 +489,7 @@ class JinaAI:
                 "base_url": os.getenv("OPENAI_ENDPOINT"),
                 "api_key": os.getenv("OPENAI_TOKEN"),
                 "model": os.getenv("OPENAI_MODEL"),
+                "timeout": os.getenv("OPENAI_TIMEOUT", 120),
             }
 
         else:
