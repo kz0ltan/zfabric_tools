@@ -1,9 +1,9 @@
 import argparse
-import httpx
 import json
 import os
 import time
 
+import httpx
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
@@ -42,7 +42,7 @@ def load_urls(url_path: str):
     return lines
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="CLI tool to extract content using libraries")
     parser.add_argument("-u", "--url", required=False, help="Content URL")
     parser.add_argument(
@@ -81,7 +81,11 @@ def main():
         help="Run CSS selectors after retrieval and print result",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
     load_dotenv(os.path.expanduser(ENV_PATH))
     llm_clients = get_llm_clients(args.config_path, args.proxy)
 

@@ -2,19 +2,17 @@
 
 """Download public/user information from Reddit"""
 
-import argparse
 import datetime
-import json
 import os
 import sys
 from typing import Optional
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import praw
 
 __all__ = ["Reddit"]
 
-ENV_PATH = "~/.config/zfabric/.env"
+# ENV_PATH = "~/.config/zfabric/.env"
 
 
 class Reddit:
@@ -65,20 +63,24 @@ class Reddit:
 
             # Add type-specific attributes
             if item_type == "post":
-                saved_item.update({
-                    "title": item.title,
-                    "author": item.author.name if item.author else "[deleted]",
-                    "selftext": item.selftext if hasattr(item, "selftext") else "",
-                    "is_self": item.is_self if hasattr(item, "is_self") else None,
-                    "score": item.score,
-                })
+                saved_item.update(
+                    {
+                        "title": item.title,
+                        "author": item.author.name if item.author else "[deleted]",
+                        "selftext": item.selftext if hasattr(item, "selftext") else "",
+                        "is_self": item.is_self if hasattr(item, "is_self") else None,
+                        "score": item.score,
+                    }
+                )
             elif item_type == "comment":
-                saved_item.update({
-                    "body": item.body if hasattr(item, "body") else "",
-                    "author": item.author.name if item.author else "[deleted]",
-                    "parent_id": item.parent_id if hasattr(item, "parent_id") else None,
-                    "score": item.score,
-                })
+                saved_item.update(
+                    {
+                        "body": item.body if hasattr(item, "body") else "",
+                        "author": item.author.name if item.author else "[deleted]",
+                        "parent_id": item.parent_id if hasattr(item, "parent_id") else None,
+                        "score": item.score,
+                    }
+                )
             else:
                 raise ValueError(f"Unknown item type: '{item_type}'")
 
@@ -106,14 +108,16 @@ class Reddit:
                 text = item["body"]
                 tags = ["reddit", item["subreddit"].lower()]
 
-            ndata.append({
-                "url": url,
-                "date": date,
-                "title": title,
-                "summary": text,
-                "tags": tags,
-                "source": "reddit",
-            })
+            ndata.append(
+                {
+                    "url": url,
+                    "date": date,
+                    "title": title,
+                    "summary": text,
+                    "tags": tags,
+                    "source": "reddit",
+                }
+            )
 
         return ndata
 
@@ -220,64 +224,64 @@ class Reddit:
         return self.get_saved_posts(self.reddit, limit=None)
 
 
-def parse_parameters():
-    parser = argparse.ArgumentParser(description="Download saved Reddit posts and comments")
-    parser.add_argument(
-        "--client_id", type=str, default=None, required=False, help="Reddit API client ID"
-    )
-    parser.add_argument(
-        "--client_secret", type=str, default=None, required=False, help="Reddit API client secret"
-    )
-    parser.add_argument(
-        "--username", type=str, default=None, required=False, help="Reddit username"
-    )
-    parser.add_argument(
-        "--password", type=str, default=None, required=False, help="Reddit password"
-    )
-    parser.add_argument(
-        "--user_agent",
-        type=str,
-        required=False,
-        default="zFabric Reddit client",
-        help="User agent for Reddit API requests",
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--url", type=str, required=False, help="Reddit URL to download submission/comments"
-    )
-    group.add_argument(
-        "--saved",
-        required=False,
-        action="store_true",
-        help="Download user's saved posts/comments",
-    )
-
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_parameters()
-    load_dotenv(os.path.expanduser(ENV_PATH))
-    r = Reddit(
-        client_id=args.client_id,
-        client_secret=args.client_secret,
-        user_agent=args.user_agent,
-        username=args.username,
-        password=args.password,
-    )
-    if args.saved:
-        results = r.get_saved_posts()
-        filtered_results = []
-        for r in results:
-            if r["type"] == "comment":
-                continue
-            filtered_results.append({
-                "title": r["title"],
-                "text": r["selftext"],
-                "subreddit": r["subreddit"],
-            })
-        print(json.dumps(filtered_results, indent=2))
-    elif args.url:
-        submission = r.get_submission(args.url)
-        r.print_post(submission)
-        r.print_comment_tree(submission.comments)
+# def parse_parameters():
+#    parser = argparse.ArgumentParser(description="Download saved Reddit posts and comments")
+#    parser.add_argument(
+#        "--client_id", type=str, default=None, required=False, help="Reddit API client ID"
+#    )
+#    parser.add_argument(
+#        "--client_secret", type=str, default=None, required=False, help="Reddit API client secret"
+#    )
+#    parser.add_argument(
+#        "--username", type=str, default=None, required=False, help="Reddit username"
+#    )
+#    parser.add_argument(
+#        "--password", type=str, default=None, required=False, help="Reddit password"
+#    )
+#    parser.add_argument(
+#        "--user_agent",
+#        type=str,
+#        required=False,
+#        default="zFabric Reddit client",
+#        help="User agent for Reddit API requests",
+#    )
+#    group = parser.add_mutually_exclusive_group(required=True)
+#    group.add_argument(
+#        "--url", type=str, required=False, help="Reddit URL to download submission/comments"
+#    )
+#    group.add_argument(
+#        "--saved",
+#        required=False,
+#        action="store_true",
+#        help="Download user's saved posts/comments",
+#    )
+#
+#    return parser.parse_args()
+#
+#
+# if __name__ == "__main__":
+#    args = parse_parameters()
+#    load_dotenv(os.path.expanduser(ENV_PATH))
+#    r = Reddit(
+#        client_id=args.client_id,
+#        client_secret=args.client_secret,
+#        user_agent=args.user_agent,
+#        username=args.username,
+#        password=args.password,
+#    )
+#    if args.saved:
+#        results = r.get_saved_posts()
+#        filtered_results = []
+#        for r in results:
+#            if r["type"] == "comment":
+#                continue
+#            filtered_results.append({
+#                "title": r["title"],
+#                "text": r["selftext"],
+#                "subreddit": r["subreddit"],
+#            })
+#        print(json.dumps(filtered_results, indent=2))
+#    elif args.url:
+#        submission = r.get_submission(args.url)
+#        r.print_post(submission)
+#        r.print_comment_tree(submission.comments)
