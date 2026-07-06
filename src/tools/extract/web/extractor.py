@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 
-from collections.abc import Callable
+import concurrent.futures
 import json as js
 import logging
-from urllib.parse import urlparse
-from typing import List, Optional, Any, Union, Dict, Generator, Tuple
 import queue
-
-import requests
-import concurrent.futures
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from urllib.parse import urlparse
+
+import requests
 from langchain_openai import ChatOpenAI
 
-from .jina import JinaAI
 from .exceptions import (
-    RetrievalError,
+    ExtractionError,
     FailedRetrievalError,
     HTTPStatusError,
-    ExtractionError,
+    RetrievalError,
 )
-from .common import set_up_logging
+from .jina import JinaAI
 
-# https://stackoverflow.com/questions/4672060/web-scraping-how-to-identify-main-content-on-a-webpage
 # https://github.com/scrapinghub/article-extraction-benchmark
+# https://stackoverflow.com/questions/4672060/web-scraping-how-to-identify-main-content-on-a-webpage
 
 
 class WebExtractor:
@@ -354,22 +353,26 @@ class WebExtractor:
         results = []
         for retriever in retrievers:
             try:
-                results.append({
-                    "url": url,
-                    "html_content": self.retrieve(url, retriever),
-                    "retrieval": {"status": "success", "retriever": retriever},
-                })
+                results.append(
+                    {
+                        "url": url,
+                        "html_content": self.retrieve(url, retriever),
+                        "retrieval": {"status": "success", "retriever": retriever},
+                    }
+                )
                 return results
             except Exception as e:
-                results.append({
-                    "url": url,
-                    "html_content": None,
-                    "retrieval": {
-                        "status": "error",
-                        "error": str(e),
-                        "retriever": retriever,
-                    },
-                })
+                results.append(
+                    {
+                        "url": url,
+                        "html_content": None,
+                        "retrieval": {
+                            "status": "error",
+                            "error": str(e),
+                            "retriever": retriever,
+                        },
+                    }
+                )
 
         raise FailedRetrievalError(f"All retrieval methods failed for: {url}", results)
 
@@ -583,11 +586,13 @@ class WebExtractor:
                     _flush_batch()
                     break
                 idx, payload = item
-                batch_items.append({
-                    "url": payload["url"],
-                    "html_content": payload.get("html_content"),
-                    "custom_css_selectors": self._get_custom_css_selector(payload["url"]),
-                })
+                batch_items.append(
+                    {
+                        "url": payload["url"],
+                        "html_content": payload.get("html_content"),
+                        "custom_css_selectors": self._get_custom_css_selector(payload["url"]),
+                    }
+                )
                 batch_indices.append(idx)
                 if len(batch_items) >= jina_batch_size:
                     _flush_batch()
